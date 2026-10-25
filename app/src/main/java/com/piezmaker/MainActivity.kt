@@ -101,7 +101,7 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.btnPickMusic).setOnClickListener {
             val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
-                type = "audio/*"
+                type = "*/*"
             }
             startActivityForResult(i, REQ_MUSIC)
         }
@@ -263,9 +263,22 @@ class MainActivity : Activity() {
         } catch (_: Exception) {}
         when (requestCode) {
             REQ_MUSIC -> {
-                musicUri = uri
-                txtMusic.text = "音频：${lastSegment(uri)}"
-                tabs[current].music = uri.toString()
+                if (hasVideoTrack(uri)) {
+                    // 视频：提取音轨 → 解码 PCM → 写 WAV（不重编码画面，Phira 兼容）
+                    val wav = File(cacheDir, "imported_audio.wav")
+                    wav.delete()
+                    if (extractAudioToWav(uri, wav)) {
+                        musicUri = Uri.fromFile(wav)
+                        txtMusic.text = "音频：${lastSegment(uri)}（已提取音轨）"
+                        tabs[current].music = musicUri.toString()
+                    } else {
+                        toast("视频中未找到可用音轨，无法导入")
+                    }
+                } else {
+                    musicUri = uri
+                    txtMusic.text = "音频：${lastSegment(uri)}"
+                    tabs[current].music = uri.toString()
+                }
             }
             REQ_IMAGE -> {
                 imageUri = uri
@@ -276,6 +289,109 @@ class MainActivity : Activity() {
     }
 
     private fun lastSegment(uri: Uri): String = uri.lastPathSegment ?: "已选择"
+
+    /** 探测视频：含 video 轨道即视为视频（有音频轨道则提取，否则提示失败） */
+    private fun hasVideoTrack(uri: Uri): Boolean {
+        return try {
+            val ex = android.media.MediaExtractor()
+            ex.setDataSource(this, uri, null)
+            var hasVideo = false
+            var hasAudio = false
+            for (i in 0 until ex.trackCount) {
+                val f = ex.getTrackFormat(i)
+                val mime = f.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/")) hasVideo = true
+                if (mime.startsWith("audio/")) hasAudio = true
+            }
+            ex.release()
+            hasVideo && hasAudio
+        } catch (_: Exception) { false }
+    }
+
+    /** 提取音轨 → MediaCodec 解码 PCM → 写 WAV（仅音频，不重编码视频） */
+    private fun extractAudioToWav(uri: Uri, dst: File): Boolean {
+        return try {
+            val ex = android.media.MediaExtractor()
+            ex.setDataSource(this, uri, null)
+            var audioIdx = -1
+            var fmt: android.media.MediaFormat? = null
+            for (i in 0 until ex.trackCount) {
+                val f = ex.getTrackFormat(i)
+                if (f.getString(android.media.MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    audioIdx = i; fmt = f; break
+                }
+            }
+            if (audioIdx < 0 || fmt == null) { ex.release(); return false }
+            ex.selectTrack(audioIdx)
+
+            val name = android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS).findDecoderForFormat(fmt)
+            if (name == null) { ex.release(); return false }
+            val codec = android.media.MediaCodec.createByCodecName(name)
+            codec.configure(fmt, null, null, 0)
+            codec.start()
+
+            val info = android.media.MediaCodec.BufferInfo()
+            val pcm = java.io.ByteArrayOutputStream()
+            var sampleRate = 44100
+            var channels = 2
+            var inputEos = false
+            var outputEos = false
+
+            while (!outputEos) {
+                // 喂输入
+                if (!inputEos) {
+                    val inIdx = codec.dequeueInputBuffer(10_000)
+                    if (inIdx >= 0) {
+                        val buf = codec.getInputBuffer(inIdx)!!
+                        val sz = ex.readSampleData(buf, 0)
+                        if (sz < 0) {
+                            codec.queueInputBuffer(inIdx, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputEos = true
+                        } else {
+                            codec.queueInputBuffer(inIdx, 0, sz, ex.sampleTime, 0)
+                            ex.advance()
+                        }
+                    }
+                }
+                // 收输出
+                when (val outIdx = codec.dequeueOutputBuffer(info, 10_000)) {
+                    android.media.MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val f = codec.outputFormat
+                        sampleRate = f.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE)
+                        channels = f.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT)
+                    }
+                    android.media.MediaCodec.INFO_TRY_AGAIN_LATER -> {}
+                    else -> if (outIdx >= 0) {
+                        if (info.size > 0) {
+                            val ob = codec.getOutputBuffer(outIdx)!!
+                            ob.position(info.offset)
+                            ob.limit(info.offset + info.size)
+                            val arr = ByteArray(info.size)
+                            ob.get(arr)
+                            pcm.write(arr)
+                        }
+                        codec.releaseOutputBuffer(outIdx, false)
+                        if ((info.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputEos = true
+                    }
+                }
+            }
+            codec.stop(); codec.release(); ex.release()
+
+            val bytes = pcm.toByteArray()
+            // 写 WAV
+            val byteData = ByteArray(44 + bytes.size)
+            fun putStr(off: Int, s4: String) { for (j in 0 until 4) byteData[off + j] = s4[j].code.toByte() }
+            fun putInt(off: Int, v: Int) { byteData[off] = (v and 0xFF).toByte(); byteData[off+1] = ((v shr 8) and 0xFF).toByte(); byteData[off+2] = ((v shr 16) and 0xFF).toByte(); byteData[off+3] = ((v shr 24) and 0xFF).toByte() }
+            fun putShort(off: Int, v: Int) { byteData[off] = (v and 0xFF).toByte(); byteData[off+1] = ((v shr 8) and 0xFF).toByte() }
+            putStr(0, "RIFF"); putInt(4, 36 + bytes.size); putStr(8, "WAVE")
+            putStr(12, "fmt "); putInt(16, 16); putShort(20, 1); putShort(22, channels)
+            putInt(24, sampleRate); putInt(28, sampleRate * channels * 2); putShort(32, channels * 2); putShort(34, 16)
+            putStr(36, "data"); putInt(40, bytes.size)
+            System.arraycopy(bytes, 0, byteData, 44, bytes.size)
+            dst.writeBytes(byteData)
+            true
+        } catch (_: Exception) { false }
+    }
 
     /** 导入 pez/phi 谱面：解析 RPE JSON → 新建标签 + 写入草稿（音符/曲名/BPM/横线数） */
     private fun importPez(uri: Uri) {
