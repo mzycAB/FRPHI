@@ -12,7 +12,6 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.media.AudioAttributes
 import android.media.MediaPlayer
-import android.media.AudioFormat
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -23,9 +22,7 @@ import android.view.View
 import android.widget.TextView
 import java.io.File
 import kotlin.math.PI
-import kotlin.math.abs
 import kotlin.math.min
-import kotlin.math.roundToLong
 import kotlin.math.sin
 
 /**
@@ -48,12 +45,16 @@ class CalibView @JvmOverloads constructor(
     var firstDipAt: Long = 0L
     /** 已开始计时 */
     var running: Boolean = false
-    /** 媒体播放位置（校准录音 currentPosition）——音符落线改用媒体时钟，与滴声严格同步 */
+    /** 媒体播放位置（校准录音 currentPosition）——音符落线改用媒体时钟 */
     var mediaPosProvider: (() -> Int)? = null
+    /**
+     * 音频输出延迟（ms）：currentPosition 是"已送去播放"的位置，比"耳朵听到"超前这么多。
+     * 音符按 currentPosition - audioLagMs 落线，才会和听到的「滴」在同一时刻。
+     */
+    var audioLagMs: Long = 0L
 
     private val linePaint = Paint().apply { color = Color.WHITE; strokeWidth = 6f; isAntiAlias = true }
     private val lanePaint = Paint().apply { color = 0x55FFFFFF; isAntiAlias = true }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val flashPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val texPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { isAntiAlias = true }
 
@@ -164,8 +165,9 @@ class CalibView @JvmOverloads constructor(
         }
 
         // 媒体时钟：now = 录音播放位置（媒体坐标），滴在 DIP_OFFSET_MS + c*CYCLE_MS
-        val now = mediaPosProvider?.invoke()?.toLong()
-            ?: (SystemClock.elapsedRealtime() - firstDipAt + DIP_OFFSET_MS)
+        // 减去 audioLagMs 让音符与"实际听到"的滴声对齐（否则音符会提前一个输出延迟落线）
+        val now = (mediaPosProvider?.invoke()?.toLong()
+            ?: (SystemClock.elapsedRealtime() - firstDipAt + DIP_OFFSET_MS)) - audioLagMs
         val pxPerMs = (h * 0.55f) / FALL_MS
 
         val cycleIdx = Math.floorDiv(now - DIP_OFFSET_MS, CYCLE_MS)
@@ -203,8 +205,10 @@ class CalibrationActivity : Activity() {
 
     private companion object {
         const val TOTAL = 10
-        const val ACCEPT_WINDOW = 400L
-        const val SR = 44100
+        /** 点击可以比「滴」早这么多（有人习惯抢拍） */
+        const val TAP_EARLY_MS = 300L
+        /** 点击可以比「滴」晚这么多（蓝牙耳机 + 反应时间） */
+        const val TAP_LATE_MS = 600L
     }
 
     private lateinit var calibView: CalibView
@@ -248,7 +252,7 @@ class CalibrationActivity : Activity() {
         btnRetry = findViewById(R.id.btnRetry)
 
         btnApply.setOnClickListener {
-            setResult(RESULT_OK, Intent().putExtra("delay", averageDelay()))
+            setResult(RESULT_OK, Intent().putExtra("delay", suggestedDelay()))
             finish()
         }
         btnRetry.setOnClickListener { restart() }
@@ -352,6 +356,7 @@ class CalibrationActivity : Activity() {
         // 播放录音：滴在文件内 1600ms 处；滴时刻 = 开始播放墙钟 + 1600（每 2000ms 一轮）
         firstDipAt = playStartReal + CalibView.DIP_OFFSET_MS
         calibView.firstDipAt = firstDipAt
+        calibView.audioLagMs = 0L
         calibView.running = true
         calibView.mediaPosProvider = { caliPlayer?.currentPosition ?: 0 }
 
@@ -366,35 +371,48 @@ class CalibrationActivity : Activity() {
         calibView.flashNow()
         calibView.spawnHitFx(x, y)
         try { hitPool?.play(sndCalHit, 1f, 1f, 1, 0, 1f) } catch (_: Exception) {}
-        // 用媒体时钟计算偏差：设备输出延迟对"滴声"与"点击感知"同样叠加，差值自动抵消
+
+        // 用媒体时钟算偏差：录到的"点击位置"和"滴的位置"都在同一套 currentPosition 里，
+        // 设备输出延迟对两者同样叠加，差值就是"这个设备上音符会晚多少"。
         val pos = (caliPlayer?.currentPosition ?: 0).toLong()
-        val n = ((pos - CalibView.DIP_OFFSET_MS).toFloat() / CalibView.CYCLE_MS).roundToLong()
-        val dipPos = CalibView.DIP_OFFSET_MS + n * CalibView.CYCLE_MS
+        // 匹配到最近的「滴」；太早（还在「嗒」）或离滴太远的一律不算
+        val tap = CalibMath.mapTap(
+            pos, CalibView.DIP_OFFSET_MS, CalibView.CYCLE_MS, TAP_EARLY_MS, TAP_LATE_MS
+        ) ?: return
+        val dipPos = tap.dipPos
+        val d = tap.delta
         if (!usedDips.add(dipPos)) return          // 这一拍已经记过
         if (deltas.size >= TOTAL) return
-        val d = pos - dipPos                       // 可正可负
-        deltas.add(d)
+
+        deltas.add(d)                              // 可正可负
+        // 用已经测出来的偏移把落线时刻往后挪：currentPosition 比"耳朵听到"超前这么多，
+        // 不补的话音符会提前一个输出延迟到线（蓝牙耳机上非常明显）。
+        calibView.audioLagMs = suggestedDelay().toLong().coerceIn(0L, 400L)
         txtProgress.text = "${deltas.size} / $TOTAL"
         txtResult.text = "最近一次：${if (d >= 0) "+" else ""}$d ms"
         if (deltas.size >= TOTAL) finishCalibration()
     }
 
+
     private fun finishCalibration() {
         finished = true
         calibView.running = false
         handler.removeCallbacksAndMessages(null)
-        val v = averageDelay()
+        val v = suggestedDelay()
+        val lo = deltas.min(); val hi = deltas.max()
         txtDesc.text = getString(R.string.calib_done)
-        txtResult.text = "建议延迟：$v ms（$TOTAL 次平均）"
+        txtResult.text = "建议延迟：$v ms（$TOTAL 次中位数，范围 $lo ~ $hi）"
         btnApply.text = "应用 $v ms"
         btnApply.visibility = View.VISIBLE
     }
 
-    /** 取全部 10 次的平均值（用户要求）；允许负数 = 提前点 */
-    private fun averageDelay(): Int {
-        if (deltas.isEmpty()) return 0
-        return (deltas.sum() / deltas.size).toInt().coerceIn(-500, 500)
-    }
+    /**
+     * 建议延迟：取 10 次的**中位数**。
+     * 原来取平均，只要有一次点歪（比如点在「嗒」上）整个结果就被拖偏几十毫秒，
+     * 中位数对个别脏数据不敏感。允许负数 = 提前点。
+     */
+    private fun suggestedDelay(): Int =
+        CalibMath.median(deltas).toInt().coerceIn(-500, 500)
 
     override fun onPause() {
         try { caliPlayer?.pause() } catch (_: Exception) {}

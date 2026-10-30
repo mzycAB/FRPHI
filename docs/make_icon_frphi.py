@@ -1,4 +1,4 @@
-"""生成 FRPHI 安卓启动图标（自适应图标 + legacy 各密度 PNG）。
+"""【已由 make_icon_vector.py 取代，保留作历史】生成 FRPHI 安卓启动图标（legacy 各密度 PNG）。
 
 自适应图标（Android 8.0+ 真正使用的）结构：
   前景层 ic_launcher_foreground.png  108dp 画布（xxxhdpi=432px），内容居中约 70%
