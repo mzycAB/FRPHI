@@ -8,20 +8,11 @@ import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
 import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /** 谱面参数（设置页收集） */
-/** 判定线关键帧：时间 + 姿态（moveX/moveY 归一化 -1..1，rotate 度） */
-data class LineKeyframe(
-    val timeMs: Long,
-    val moveX: Float,
-    val moveY: Float,
-    val rotate: Float
-)
-
 data class ChartMeta(
     val name: String,
     val composer: String,
@@ -38,7 +29,8 @@ data class ChartMeta(
     val lineMoveX: Float = 0f,   // 判定线全局偏移（归一化 -1..1）
     val lineMoveY: Float = 0f,
     val lineRotate: Float = 0f,  // 判定线全局旋转（度）
-    val tabId: String = ""       // 项目标签 id（草稿持久化用）
+    val tabId: String = "",      // 项目标签 id（草稿持久化用）
+    val bpmOffsetMs: Int = 0     // BPM 偏移（ms，正数 = 谱面整体比音乐延后，同 Phiedit）
 ) : android.os.Parcelable {
     constructor(p: android.os.Parcel) : this(
         p.readString() ?: "",
@@ -56,7 +48,8 @@ data class ChartMeta(
         p.readFloat(),
         p.readFloat(),
         p.readFloat(),
-        p.readString() ?: ""
+        p.readString() ?: "",
+        p.readInt()
     )
 
     override fun describeContents() = 0
@@ -77,6 +70,7 @@ data class ChartMeta(
         dest.writeFloat(lineMoveY)
         dest.writeFloat(lineRotate)
         dest.writeString(tabId)
+        dest.writeInt(bpmOffsetMs)
     }
 
     companion object {
@@ -90,8 +84,13 @@ data class ChartMeta(
 
 /**
  * RPEJSON 谱面生成 + PEZ 打包。
- * 时间单位：beat；beat = ms/1000 * bpm/60。量化到 1/hLines 拍。
+ *
+ * 时间单位：beat；beat = ms/1000 * bpm/60。
+ * **不再吸附**：音符时间按 `ms×bpm/60000` 精确约分成 `[整数, 分子, 分母]`，
+ * 位置按 `posX × 675` 原样写出（以前会被吸到 1/hLines 拍、1/vLines 格上）。
+ *
  * 坐标：positionX 范围 [-675, 675]（解析端除以 675 归一化）。
+ * 多判定线：每条判定线各写一份 eventLayers（含自己的流速事件）+ 自己的音符。
  *
  * 素材处理（杜绝"扩展名与内容不匹配"）：
  *  - 图片：读取字节 -> 按魔数解码 -> 重编码为真 PNG（bg.png）
@@ -99,69 +98,150 @@ data class ChartMeta(
  */
 object PezExporter {
 
-    private data class Quantized(val i: Int, val n: Int, val d: Int)
+    /** 分母上限（防止极端 BPM 出现天文数字分母，1e6 分之一拍 ≈ 0.5 微秒，绝对听不出） */
+    private const val MAX_DEN = 1_000_000L
+    /** 时间表示允许的误差（拍）：1e-6 拍 ≈ 0.0005 ms */
+    private const val TIME_EPS = 1e-6
+    /** 优先尝试的"好看"分母（能被 RPE 编辑器直观显示） */
+    private val NICE_DEN = intArrayOf(1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 384, 768, 960, 1920)
 
-    /** 毫秒 -> Triple [i, n, d]，量化到 1/hLines 拍 */
-    private fun quantizeBeat(ms: Long, bpm: Double, hLines: Int): Quantized {
-        val beat = ms / 1000.0 * bpm / 60.0
-        val k = Math.round(beat * hLines).toInt().coerceAtLeast(0)
-        return Quantized(k / hLines, k % hLines, hLines)
-    }
-
-    /** 归一化位置 [-1,1] -> RPE positionX [-675, 675]，量化到竖线格 */
-    private fun quantizePosX(norm: Float, vLines: Int): Float {
-        val cell = 2f / vLines
-        val k = Math.round((norm + 1f) / cell).toInt().coerceIn(0, vLines)
-        return -675f + k * cell * 675f
+    /**
+     * 毫秒 → RPE Triple `[i, n, d]`（= i + n/d 拍），**精确、不吸附**。
+     *
+     * bpm 取到 1/1000，于是 beat = ms×bpmMilli / 60_000_000 是个精确分数，
+     * 约分后就能得到最小分母的准确表示（例如 1234ms@120bpm → 2 + 117/250）。
+     */
+    fun beatTriple(ms: Long, bpm: Double): String {
+        val safeMs = if (ms < 0) 0L else ms
+        val bpmMilli = Math.round((if (bpm.isFinite() && bpm > 0) bpm else 120.0) * 1000.0).toLong()
+        var num = safeMs * bpmMilli
+        var den = 60_000_000L
+        val g = gcd(num, den)
+        if (g > 1) { num /= g; den /= g }
+        // 分母太大时先看能不能用"好看"的分母精确表示（误差在 1e-6 拍内）
+        if (den > 1920L) {
+            val beat = num.toDouble() / den.toDouble()
+            for (d in NICE_DEN.reversed()) {
+                val n = Math.round(beat * d).toLong()
+                if (Math.abs(n.toDouble() / d - beat) <= TIME_EPS && n <= d * 1_000_000L) {
+                    return "[${n / d}, ${n % d}, $d]"
+                }
+            }
+        }
+        if (den > MAX_DEN) {
+            val beat = num.toDouble() / den.toDouble()
+            val n = Math.round(beat * MAX_DEN)
+            return "[${n / MAX_DEN}, ${n % MAX_DEN}, $MAX_DEN]"
+        }
+        return "[${num / den}, ${num % den}, $den]"
     }
 
     /** 构建 chart.json 内容（musicName/imageName 为最终打包文件名） */
-    fun buildChartJson(meta: ChartMeta, notes: List<RecordedNote>, musicName: String, imageName: String, keyframes: List<LineKeyframe> = emptyList()): String {
-        val sb = StringBuilder()
+    fun buildChartJson(
+        meta: ChartMeta,
+        lines: List<Line>,
+        notes: List<RecordedNote>,
+        musicName: String,
+        imageName: String
+    ): String = buildChartJsonCore(
+        meta.name,
+        meta.level,          // 没填就保持空字符串，Phira 怎么处理是它的事
+        meta.charter, meta.composer, meta.bpm, meta.delayMs,
+        meta.linePosPct, lines, notes, musicName, imageName, meta.bpmOffsetMs
+    )
+
+    /**
+     * 不依赖 Android 的 chart.json 构建（单元测试直接用这个，不用造 Uri）。
+     */
+    fun buildChartJsonCore(
+        name: String,
+        level: String,
+        charter: String,
+        composer: String,
+        bpm: Double,
+        delayMs: Int,
+        fallbackPosPct: Int,
+        lines: List<Line>,
+        notes: List<RecordedNote>,
+        musicName: String,
+        imageName: String,
+        bpmOffsetMs: Int = 0
+    ): String {
+        val sb = StringBuilder(4096 + notes.size * 420)
         sb.append("{\n")
         // META
         sb.append("  \"META\": {\n")
         sb.append("    \"id\": \"1\",\n")
-        sb.append("    \"name\": ").append(jstr(meta.name)).append(",\n")
-        sb.append("    \"level\": ").append(jstr(meta.level)).append(",\n")
+        sb.append("    \"name\": ").append(jstr(name)).append(",\n")
+        sb.append("    \"level\": ").append(jstr(level)).append(",\n")
         sb.append("    \"background\": ").append(jstr(imageName)).append(",\n")
-        sb.append("    \"charter\": ").append(jstr(meta.charter)).append(",\n")
-        sb.append("    \"composer\": ").append(jstr(meta.composer)).append(",\n")
+        sb.append("    \"charter\": ").append(jstr(charter)).append(",\n")
+        sb.append("    \"composer\": ").append(jstr(composer)).append(",\n")
         sb.append("    \"illustration\": \"\",\n")
         sb.append("    \"song\": ").append(jstr(musicName)).append(",\n")
-        sb.append("    \"offset\": 0,\n")
+        sb.append("    \"offset\": ").append(bpmOffsetMs).append(",\n")
         sb.append("    \"RPEVersion\": 160\n")
         sb.append("  },\n")
         // BPMList
         sb.append("  \"BPMList\": [\n")
-        sb.append("    { \"bpm\": ").append(trimNum(meta.bpm)).append(", \"startTime\": [0, 0, 1] }\n")
+        sb.append("    { \"bpm\": ").append(trimNum(bpm)).append(", \"startTime\": [0, 0, 1] }\n")
         sb.append("  ],\n")
-        // judgeLineList（单条）
+        // judgeLineList（多条）
         sb.append("  \"judgeLineList\": [\n")
+
+        val safeLines = if (lines.isEmpty()) listOf(Line(0).also { it.posPct = fallbackPosPct }) else lines
+        val lineIds = safeLines.map { it.id }.toHashSet()
+        val firstId = safeLines.first().id
+
+        for ((li, line) in safeLines.withIndex()) {
+            appendLine(sb, bpm, delayMs, bpmOffsetMs, line, li, notes, lineIds, firstId)
+            if (li != safeLines.lastIndex) sb.append(",")
+            sb.append("\n")
+        }
+        sb.append("  ]\n")
+        sb.append("}\n")
+        return sb.toString()
+    }
+
+    private fun appendLine(
+        sb: StringBuilder,
+        bpm: Double,
+        delayMs: Int,
+        bpmOffsetMs: Int,
+        line: Line,
+        index: Int,
+        allNotes: List<RecordedNote>,
+        lineIds: Set<Int>,
+        firstId: Int
+    ) {
         sb.append("    {\n")
-        sb.append("      \"Name\": \"line\",\n")
+        // Name 是判定线的"身份"，跟位置/顺序无关（Phiedit 里也是固定名，默认 "Untitled"）
+        sb.append("      \"Name\": ").append(jstr(line.name.ifEmpty { "line" })).append(",\n")
         sb.append("      \"Texture\": \"line.png\",\n")
         sb.append("      \"father\": -1,\n")
         sb.append("      \"rotateWithFather\": false,\n")
+
         // 判定线位置：RPE 的 moveY 向上为正，而屏幕百分比向下递增，所以符号取反
         // 50% = 屏幕中心(0)，每偏离 1% = 9 个 RPE 单位（RPE_HEIGHT=900）
-        val lineY = ((50 - meta.linePosPct) * 9).toDouble()
-        // 事件数组生成：有关键帧 → 相邻帧线性插值；无关键帧 → 全局姿态平铺
-        val mxBase = meta.lineMoveX * 675.0
-        val myBase = lineY + meta.lineMoveY * 675.0
-        val rotBase = -meta.lineRotate
-        val mkX = { k: LineKeyframe -> meta.lineMoveX * 675.0 }        // 关键帧存的是绝对偏移? 见下方注释
+        val lineY = ((50 - line.posPct.coerceIn(0, 100)) * 9).toDouble()
+        // 全局姿态（没有关键帧时直接用它，避免"拖动判定线但不打关键帧"的偏移丢失）
+        val globalX = line.moveX * 675.0
+        val globalY = lineY - line.moveY * 450.0
+        val globalR = -line.rotate
+        // 关键帧存的是归一化值（-1..1）：x 乘 675（RPE 半宽）、y 乘 450（RPE 半高 900/2）
         val kvX = { k: LineKeyframe -> trimNum(k.moveX * 675.0) }
-        val kvY = { k: LineKeyframe -> trimNum(lineY + k.moveY * 675.0) }
+        val kvY = { k: LineKeyframe -> trimNum(lineY - k.moveY * 450.0) }
         val kvR = { k: LineKeyframe -> trimNum(-k.rotate) }
-        // 时间转 Triple 字符串
-        val tS = { ms: Long -> val q = quantizeBeat(ms, meta.bpm, meta.hLines); "[${q.i}, ${q.n}, ${q.d}]" }
-        fun eventsFor(gen: (LineKeyframe) -> String): String {
-            val kfs = keyframes.sortedBy { it.timeMs }
+
+        // 时间 → Triple 字符串（不吸附，精确分数）
+        val tS = { ms: Long -> beatTriple(ms, bpm) }
+        fun eventsFor(gen: (LineKeyframe) -> String, global: () -> String): String {
+            val kfs = line.sortedKeyframes()
             // 无关键帧：输出一个完整事件对象（裸数字会让 Phira 的 RPEEvent 解析失败）
             if (kfs.isEmpty()) {
-                val v = gen(LineKeyframe(0L, 0f, 0f, 0f))
-                return "{ \"startTime\": [0,0,1], \"endTime\": [100000,0,1], \"start\": " + v + ", \"end\": " + v + ", \"easingType\": 0 }"
+                val v = global()
+                return "{ \"startTime\": [0,0,1], \"endTime\": [100000,0,1], \"start\": " + v +
+                    ", \"end\": " + v + ", \"easingType\": 0 }"
             }
             val sb2 = StringBuilder()
             for ((i, k) in kfs.withIndex()) {
@@ -177,39 +257,85 @@ object PezExporter {
             }
             return sb2.toString()
         }
+
+        // 流速事件：每个关键帧的 speed 管到下一个关键帧（分段常速）→ 就是"流速变化"
+        fun speedEvents(): String {
+            val kfs = line.sortedKeyframes()
+            val base = trimNum(clampLineSpeed(line.speed))
+            if (kfs.isEmpty()) {
+                return "{ \"startTime\": [0,0,1], \"endTime\": [100000,0,1], \"start\": $base, \"end\": $base, \"easingType\": 0 }"
+            }
+            val sb2 = StringBuilder()
+            for ((i, k) in kfs.withIndex()) {
+                val s0 = trimNum(clampLineSpeed(k.speed))
+                if (i + 1 < kfs.size) {
+                    val k2 = kfs[i + 1]
+                    sb2.append("{ \"startTime\": ").append(tS(k.timeMs)).append(", \"endTime\": ").append(tS(k2.timeMs))
+                        .append(", \"start\": ").append(s0).append(", \"end\": ")
+                        .append(trimNum(clampLineSpeed(k2.speed))).append(", \"easingType\": 0 }, ")
+                } else {
+                    sb2.append("{ \"startTime\": ").append(tS(k.timeMs)).append(", \"endTime\": [100000,0,1], \"start\": ")
+                        .append(s0).append(", \"end\": ").append(s0).append(", \"easingType\": 0 }")
+                }
+            }
+            return sb2.toString()
+        }
+
+        // 透明度事件：0~255，关键帧之间线性渐变（RPE/Phira 的 alphaEvents）
+        fun alphaEvents(): String {
+            val kfs = line.sortedKeyframes()
+            fun a255(v: Float): String = trimNum((v.coerceIn(0f, 1f) * 255f).coerceIn(0f, 255f))
+            if (kfs.isEmpty()) {
+                val a = a255(line.alpha)
+                return "{ \"startTime\": [0,0,1], \"endTime\": [100000,0,1], \"start\": $a, \"end\": $a, \"easingType\": 0 }"
+            }
+            val sb2 = StringBuilder()
+            for ((i, k) in kfs.withIndex()) {
+                if (i + 1 < kfs.size) {
+                    val k2 = kfs[i + 1]
+                    sb2.append("{ \"startTime\": ").append(tS(k.timeMs)).append(", \"endTime\": ").append(tS(k2.timeMs))
+                        .append(", \"start\": ").append(a255(k.alpha)).append(", \"end\": ").append(a255(k2.alpha))
+                        .append(", \"easingType\": 0 }, ")
+                } else {
+                    sb2.append("{ \"startTime\": ").append(tS(k.timeMs)).append(", \"endTime\": [100000,0,1], \"start\": ")
+                        .append(a255(k.alpha)).append(", \"end\": ").append(a255(k.alpha)).append(", \"easingType\": 0 }")
+                }
+            }
+            return sb2.toString()
+        }
+
         sb.append("      \"eventLayers\": [\n")
         sb.append("        {\n")
-        sb.append("          \"alphaEvents\": [ { \"startTime\": [0,0,1], \"endTime\": [100000,0,1], \"start\": 255.0, \"end\": 255.0, \"easingType\": 0 } ],\n")
-        sb.append("          \"moveXEvents\": [ ").append(eventsFor(kvX)).append(" ],\n")
-        sb.append("          \"moveYEvents\": [ ").append(eventsFor(kvY)).append(" ],\n")
-        sb.append("          \"rotateEvents\": [ ").append(eventsFor(kvR)).append(" ],\n")
-        sb.append("          \"speedEvents\": [ { \"startTime\": [0,0,1], \"endTime\": [100000,0,1], \"start\": ").append(trimNum(meta.speed)).append(", \"end\": ").append(trimNum(meta.speed)).append(", \"easingType\": 0 } ]\n")
+        sb.append("          \"alphaEvents\": [ ").append(alphaEvents()).append(" ],\n")
+        sb.append("          \"moveXEvents\": [ ").append(eventsFor(kvX) { trimNum(globalX) }).append(" ],\n")
+        sb.append("          \"moveYEvents\": [ ").append(eventsFor(kvY) { trimNum(globalY) }).append(" ],\n")
+        sb.append("          \"rotateEvents\": [ ").append(eventsFor(kvR) { trimNum(globalR) }).append(" ],\n")
+        sb.append("          \"speedEvents\": [ ").append(speedEvents()).append(" ]\n")
         sb.append("        }\n")
         sb.append("      ],\n")
         sb.append("      \"notes\": [\n")
 
-        // notes：按时间排序；delay 校正（用户点击偏晚 → 音符时间提前，减掉延迟）
-        val sorted = notes.sortedBy { it.startMs }
-        for ((idx, note) in sorted.withIndex()) {
-            val startAdj = (note.startMs - meta.delayMs).coerceAtLeast(0L)
-            val endAdj = (note.endMs - meta.delayMs).coerceAtLeast(startAdj)
-            val t0 = quantizeBeat(startAdj, meta.bpm, meta.hLines)
-            val t1 = quantizeBeat(endAdj, meta.bpm, meta.hLines)
-            val x = quantizePosX(note.posX, meta.vLines)
+        // 属于这条线的音符：按时间排序；delay 校正（用户点击偏晚 → 音符时间提前，减掉延迟）
+        val mine = allNotes.filter { (if (it.lineId in lineIds) it.lineId else firstId) == line.id }
+            .sortedBy { it.startMs }
+        for ((idx, note) in mine.withIndex()) {
+            // 时间轴坐标 → 谱面时间：减掉输入延迟，再减掉 BPM 偏移（偏移已写进 META.offset）
+            val startAdj = (note.startMs - delayMs - bpmOffsetMs).coerceAtLeast(0L)
+            val endAdj = (note.endMs - delayMs - bpmOffsetMs).coerceAtLeast(startAdj)
             sb.append("        {\n")
             sb.append("          \"type\": ").append(note.type).append(",\n")
-            sb.append("          \"above\": 1,\n")
-            sb.append("          \"startTime\": [").append(t0.i).append(", ").append(t0.n).append(", ").append(t0.d).append("],\n")
-            sb.append("          \"endTime\": [").append(t1.i).append(", ").append(t1.n).append(", ").append(t1.d).append("],\n")
-            sb.append("          \"positionX\": ").append(trimNum(x)).append(",\n")
+            sb.append("          \"above\": ").append(if (note.above) 1 else 0).append(",\n")
+            sb.append("          \"startTime\": ").append(beatTriple(startAdj, bpm)).append(",\n")
+            sb.append("          \"endTime\": ").append(beatTriple(endAdj, bpm)).append(",\n")
+            sb.append("          \"positionX\": ").append(trimNum(note.posX * 675f)).append(",\n")
             sb.append("          \"yOffset\": 0.0,\n")
             sb.append("          \"alpha\": 255,\n")
             sb.append("          \"size\": 1.0,\n")
             sb.append("          \"speed\": 1.0,\n")
-            sb.append("          \"isFake\": 0,\n")
+            sb.append("          \"isFake\": ").append(if (note.fake) 1 else 0).append(",\n")
             sb.append("          \"visibleTime\": 999999.0\n")
             sb.append("        }")
-            if (idx != sorted.lastIndex) sb.append(",")
+            if (idx != mine.lastIndex) sb.append(",")
             sb.append("\n")
         }
         sb.append("      ],\n")
@@ -220,10 +346,7 @@ object PezExporter {
         sb.append("      \"sizeControl\": [],\n")
         sb.append("      \"alphaControl\": [],\n")
         sb.append("      \"yControl\": []\n")
-        sb.append("    }\n")
-        sb.append("  ]\n")
-        sb.append("}\n")
-        return sb.toString()
+        sb.append("    }")
     }
 
     /** info.txt（RPE 标准：首行 #，之后 Key: Value） */
@@ -249,10 +372,10 @@ object PezExporter {
      */
     fun export(
         meta: ChartMeta,
+        lines: List<Line>,
         notes: List<RecordedNote>,
         contentResolver: ContentResolver,
-        dest: File,
-        keyframes: List<LineKeyframe> = emptyList()
+        dest: File
     ): Boolean {
         return try {
             // 1. 图片重编码为真 PNG
@@ -261,7 +384,7 @@ object PezExporter {
             // 2. 音频按魔数定真实扩展名
             val musicName = "music.${sniffAudioExt(contentResolver, meta.musicUri)}"
 
-            val chartJson = buildChartJson(meta, notes, musicName, imageName)
+            val chartJson = buildChartJson(meta, lines, notes, musicName, imageName)
             val infoTxt = buildInfoTxt(meta, "chart.json", musicName, imageName)
 
             val bos = BufferedOutputStream(FileOutputStream(dest))
@@ -376,6 +499,17 @@ object PezExporter {
     }
 
     // ---- 工具 ----
+
+    private fun gcd(a: Long, b: Long): Long {
+        var x = Math.abs(a)
+        var y = Math.abs(b)
+        while (y != 0L) {
+            val t = x % y
+            x = y
+            y = t
+        }
+        return if (x == 0L) 1L else x
+    }
 
     private fun singleLine(s: String): String =
         s.replace(Regex("[\\x00-\\x1f\\x7f]"), " ").trim()

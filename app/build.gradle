@@ -3,6 +3,15 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// 签名配置放在项目根的 keystore.properties（已被 .gitignore 忽略，不进仓库）。
+// 文件不存在时 release 不签名（assembleRelease 仍可出包，只是未签名）。
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+def hasKeystore = keystorePropsFile.exists()
+
 android {
     namespace 'com.piezmaker'
     compileSdk 35
@@ -11,16 +20,18 @@ android {
         applicationId "com.piezmaker"
         minSdk 24
         targetSdk 35
-        versionCode 1
-        versionName "0.1.0"
+        versionCode 50
+        versionName "1.10.0"
     }
 
     signingConfigs {
-        release {
-            storeFile file('../piez-key.jks')
-            storePassword 'piezmaker123'
-            keyAlias 'piez'
-            keyPassword 'piezmaker123'
+        if (hasKeystore) {
+            release {
+                storeFile rootProject.file(keystoreProps['storeFile'] ?: 'piez-key.jks')
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
         }
     }
 
@@ -28,7 +39,7 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig signingConfigs.release
+            if (hasKeystore) signingConfig signingConfigs.release
         }
     }
 
@@ -40,9 +51,21 @@ android {
     kotlinOptions {
         jvmTarget = '17'
     }
+
+    testOptions {
+        unitTests {
+            // android.jar 的桩方法返回默认值（而不是抛 "Stub!"），
+            // 这样纯 JVM 测试里 new ChartMeta(Uri.EMPTY …) 这类常量/空实现也能用
+            returnDefaultValues = true
+        }
+    }
 }
 
 dependencies {
     // 零第三方依赖：录制/播放/ZIP 全部使用系统 API
     implementation fileTree(dir: 'libs', include: ['*.jar'])
+
+    // 仅单元测试用（不会打进 APK）：JVM 上跑 org.json 需要真实实现，不能用 android.jar 里的桩
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 }

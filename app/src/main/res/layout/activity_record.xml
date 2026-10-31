@@ -4,6 +4,23 @@
     android:layout_height="match_parent"
     android:background="#14161E">
 
+    <!-- 隐藏遮罩后，左上角出现的小方块（点击恢复上下遮罩） -->
+    <TextView
+        android:id="@+id/btnShowBars"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:layout_gravity="top|start"
+        android:layout_marginTop="6dp"
+        android:layout_marginStart="6dp"
+        android:background="#99000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:text="≡"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
     <com.piezmaker.RecordView
         android:id="@+id/recordView"
         android:layout_width="match_parent"
@@ -15,12 +32,49 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
-        android:layout_marginTop="86dp"
+        android:layout_marginTop="72dp"
         android:layout_marginEnd="12dp"
         android:background="#66000000"
         android:orientation="horizontal"
         android:padding="6dp"
         android:visibility="gone">
+
+        <TextView
+            android:id="@+id/txtLineInfo"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginEnd="6dp"
+            android:gravity="bottom"
+            android:text="线 1"
+            android:textColor="#00E5FF"
+            android:textSize="11sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="透明度%"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp" />
+
+            <EditText
+                android:id="@+id/editAlpha"
+                android:layout_width="52dp"
+                android:layout_height="34dp"
+                android:layout_marginTop="2dp"
+                android:background="@drawable/bg_btn_transparent"
+                android:gravity="center"
+                android:imeOptions="actionDone"
+                android:inputType="numberDecimal"
+                android:maxLength="6"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="wrap_content"
@@ -109,6 +163,7 @@
             android:orientation="vertical">
 
             <TextView
+                android:id="@+id/txtSpeedLabel"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="流速"
@@ -130,13 +185,14 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- 顶部：标题 + 阶段 + 导出（右上角） + 时间条 -->
+    <!-- 顶部：退出/曲名/其他/导出 + 时间条 -->
     <LinearLayout
+        android:id="@+id/topBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#99000000"
         android:orientation="vertical"
-        android:paddingStart="16dp"
+        android:paddingStart="10dp"
         android:paddingTop="8dp"
         android:paddingEnd="12dp"
         android:paddingBottom="6dp">
@@ -147,135 +203,81 @@
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
+            <!-- 退出：屏幕左上角 -->
+            <TextView
+                android:id="@+id/btnBack"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:background="@drawable/bg_btn_dark"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:minWidth="56dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:text="退出"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+            <!-- 玩家列表（占位，暂时没功能） -->
+            <TextView
+                android:id="@+id/btnPlayer"
+                android:layout_width="wrap_content"
+                android:layout_height="30dp"
+                android:layout_marginStart="6dp"
+                android:background="@drawable/bg_btn_dark"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:minWidth="52dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:text="玩家列表"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+
+            <!-- 曲名：右移，避免和左上角退出按钮重叠 -->
             <TextView
                 android:id="@+id/txtTitle"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
                 android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
                 android:text="曲名"
                 android:textColor="#FFFFFF"
-                android:textSize="16sp"
+                android:textSize="15sp"
                 android:textStyle="bold" />
 
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="缩放"
-                    android:textColor="#FFFFFF"
-                    android:textSize="10sp" />
-
-                <EditText
-                    android:id="@+id/scaleEdit"
-                    android:layout_width="56dp"
-                    android:layout_height="30dp"
-                    android:layout_marginTop="1dp"
-                    android:background="@drawable/bg_btn_transparent"
-                    android:gravity="center"
-                    android:imeOptions="actionDone"
-                    android:inputType="numberDecimal"
-                    android:maxLength="7"
-                    android:paddingStart="2dp"
-                    android:paddingEnd="2dp"
-                    android:textColor="#FFFFFF"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginEnd="6dp"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="倍速"
-                    android:textColor="#FFFFFF"
-                    android:textSize="10sp" />
-
-                <EditText
-                    android:id="@+id/speedEdit"
-                    android:layout_width="56dp"
-                    android:layout_height="30dp"
-                    android:layout_marginTop="1dp"
-                    android:background="@drawable/bg_btn_transparent"
-                    android:gravity="center"
-                    android:hint="1.0"
-                    android:imeOptions="actionDone"
-                    android:inputType="numberDecimal"
-                    android:maxLength="6"
-                    android:paddingStart="2dp"
-                    android:paddingEnd="2dp"
-                    android:selectAllOnFocus="true"
-                    android:textColor="#FFFFFF"
-                    android:textColorHint="#99FFFFFF"
-                    android:textSize="12sp" />
-            </LinearLayout>
-
+            <!-- 其他：缩放/倍速/兼容/平滑/双押贴图/音效/反面/线高亮/制作线 全在二级窗口里 -->
             <TextView
-                android:id="@+id/btnCompat"
+                android:id="@+id/btnOther"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginEnd="8dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_btn_transparent"
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center"
-                android:minWidth="84dp"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:text="兼容关闭"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/btnSmooth"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginEnd="8dp"
-                android:background="@drawable/bg_btn_transparent"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:minWidth="72dp"
+                android:minWidth="52dp"
                 android:paddingStart="10dp"
                 android:paddingEnd="10dp"
-                android:text="平滑:关"
-                android:textColor="#FFFFFF"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/btnSound"
-                android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:background="@drawable/bg_btn_transparent"
-                android:clickable="true"
-                android:focusable="true"
-                android:gravity="center"
-                android:minWidth="72dp"
-                android:paddingStart="10dp"
-                android:paddingEnd="10dp"
-                android:text="音效:开"
+                android:text="其他"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
 
             <TextView
                 android:id="@+id/btnExport"
                 android:layout_width="wrap_content"
-                android:layout_height="32dp"
-                android:layout_marginStart="8dp"
+                android:layout_height="30dp"
+                android:layout_marginStart="6dp"
                 android:background="@drawable/bg_btn_transparent"
                 android:clickable="true"
                 android:focusable="true"
                 android:gravity="center"
-                android:paddingStart="12dp"
-                android:paddingEnd="12dp"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
                 android:text="导出 .pez"
                 android:textColor="#FFFFFF"
                 android:textSize="13sp" />
@@ -285,7 +287,7 @@
             android:id="@+id/txtInfo"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="1dp"
+            android:layout_marginTop="3dp"
             android:text="BPM 120 · 已放 0"
             android:textColor="#CCFFFFFF"
             android:textSize="12sp" />
@@ -302,6 +304,7 @@
 
     <!-- 底部：四阶段 + 控制 -->
     <LinearLayout
+        android:id="@+id/bottomBar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
@@ -344,10 +347,47 @@
             android:layout_marginTop="6dp"
             android:orientation="horizontal">
 
-            <TextView
-                android:id="@+id/btnBack"
-                style="@style/SmallButton"
-                android:text="退出" />
+            <!-- 复制 / 粘贴：两个挤在原来一个按钮的宽度里（和上面一排 4 个按钮对齐） -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="40dp"
+                android:layout_marginStart="3dp"
+                android:layout_marginEnd="3dp"
+                android:layout_weight="1"
+                android:background="@drawable/bg_btn_dark"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnCopy"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="复制"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp" />
+
+                <View
+                    android:layout_width="1dp"
+                    android:layout_height="match_parent"
+                    android:layout_marginTop="8dp"
+                    android:layout_marginBottom="8dp"
+                    android:background="#33FFFFFF" />
+
+                <TextView
+                    android:id="@+id/btnPaste"
+                    android:layout_width="0dp"
+                    android:layout_height="match_parent"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="粘贴"
+                    android:textColor="#FFFFFF"
+                    android:textSize="12sp" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/btnRestart"
@@ -364,5 +404,950 @@
                 style="@style/SmallButton"
                 android:text="暂停" />
         </LinearLayout>
+    </LinearLayout>
+
+    <!-- 「其他」二级窗口：点背景关闭；窗口以屏幕右上角为右上角 -->
+    <View
+        android:id="@+id/menuScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/menuPanel"
+        android:layout_width="184dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="6dp"
+        android:layout_marginEnd="6dp"
+        android:background="@drawable/bg_menu_popup"
+        android:orientation="vertical"
+        android:padding="8dp"
+        android:visibility="gone">
+
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="编辑"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="缩放"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <EditText
+                            android:id="@+id/scaleEdit"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_transparent"
+                            android:gravity="center"
+                            android:hint="1.0"
+                            android:imeOptions="actionDone"
+                            android:inputType="numberDecimal"
+                            android:maxLength="7"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:selectAllOnFocus="true"
+                            android:textColor="#FFFFFF"
+                            android:textColorHint="#99FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="倍速"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <EditText
+                            android:id="@+id/speedEdit"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_transparent"
+                            android:gravity="center"
+                            android:hint="1.0"
+                            android:imeOptions="actionDone"
+                            android:inputType="numberDecimal"
+                            android:maxLength="7"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:selectAllOnFocus="true"
+                            android:textColor="#FFFFFF"
+                            android:textColorHint="#99FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="联机"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="游戏延迟（秒）"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <EditText
+                            android:id="@+id/coopDelayEdit"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_transparent"
+                            android:gravity="center"
+                            android:hint="1.0"
+                            android:imeOptions="actionDone"
+                            android:inputType="numberDecimal"
+                            android:maxLength="6"
+                            android:paddingStart="2dp"
+                            android:paddingEnd="2dp"
+                            android:selectAllOnFocus="true"
+                            android:textColor="#FFFFFF"
+                            android:textColorHint="#99FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="房间"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/txtCoopRoom"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_transparent"
+                            android:gravity="center"
+                            android:text="未联机"
+                            android:textColor="#FFFFFF"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="遮罩 / 校准"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="隐藏遮罩"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnHideBars"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="校准"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnCalib"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="校准"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="触摸"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="触摸兼容"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnCompat"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关闭"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="平滑"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnSmooth"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="音效"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnSound"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:maxLines="1"
+                            android:text="全量模式"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnFullMode"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关闭"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:maxLines="1"
+                            android:text="自动移动"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnAutoScroll"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="开"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="判定线"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="快速切换"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnQuick"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="线高亮"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnLineHi"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="判定线放置线"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnPlaceLines"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="单个"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="制作线"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="制作线显示"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnGrid"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="横线"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="横向转动"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnHRotate"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="音符"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="双押贴图"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnDoubleHint"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="反面音符"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="反面音符"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnReverse"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="框住反面音符"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnShowReverse"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="假音符"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="假音符"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnGhostPlace"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="显示假音符"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnGhostShow"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="显示"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="框住假音符"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnGhostFrame"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical" />
+                </LinearLayout>
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="9dp"
+                    android:layout_marginBottom="1dp"
+                    android:layout_marginStart="2dp"
+                    android:text="其他音符"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="5dp"
+                    android:orientation="horizontal">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="框住重叠音符"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnOverlapFrame"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="关"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="1dp" />
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:maxLines="1"
+                            android:text="真实处理"
+                            android:textColor="#99FFFFFF"
+                            android:textSize="9sp" />
+
+                        <TextView
+                            android:id="@+id/btnRealProcess"
+                            android:layout_width="match_parent"
+                            android:layout_height="30dp"
+                            android:layout_marginTop="2dp"
+                            android:background="@drawable/bg_btn_dark"
+                            android:clickable="true"
+                            android:focusable="true"
+                            android:gravity="center"
+                            android:text="显示"
+                            android:textColor="#FFFFFF"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </LinearLayout>
+            </LinearLayout>
+        </ScrollView>
     </LinearLayout>
 </FrameLayout>
