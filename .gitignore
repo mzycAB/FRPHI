@@ -7,6 +7,33 @@ captures/
 .externalNativeBuild/
 .cxx/
 
+# Kotlin 2.x 会话缓存（每次构建都会生成，原来漏了）
+.kotlin/
+
+# 打包产物（万一被拷到项目根目录，别提交）
+*.apk
+*.aab
+*.hprof
+
+# 签名 / 密钥 / 凭据：私钥与口令一律不进仓库（构建时从本机 keystore.properties 读）
+*.jks
+*.keystore
+*.p12
+*.bks
+*.pfx
+*.pem
+*.key
+keystore.properties
+keystore.properties.*
+secrets.properties
+.env
+.env.*
+*.env
+
+# Python 缓存（docs 里的辅助脚本）
+__pycache__/
+*.pyc
+
 # IDE
 .idea/
 *.iml
@@ -18,3 +45,9 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 一次性临时脚本（docs/_xxx.py 用完即删的那种）
+docs/_*.py
+
+# release 输出目录（AGP 会在这里放一份签名产物）
+app/release/
