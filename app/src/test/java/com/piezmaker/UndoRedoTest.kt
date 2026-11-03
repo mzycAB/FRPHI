@@ -1,0 +1,100 @@
+package com.piezmaker
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 长按「撤销」= 重做：撤销掉的步骤要被完整记住，正向重放后谱面回到撤销前的样子。
+ */
+class UndoRedoTest {
+
+    private fun note(type: Int, t: Long, x: Float = 0f) =
+        RecordedNote(type, t, t, x, type, 0, true, false)
+
+    @Test
+    fun `改写_撤销后再重做回到新值`() {
+        val old = note(1, 1000, 0f)
+        val new = note(3, 1000, 0.5f)
+        val notes = mutableListOf(new)            // 当前是新值
+        val e = UndoEntry()
+        e.noteModified(0, old)                    // 改动时记下旧值（模拟 setNote 的顺序）
+
+        e.captureAfter(notes)                     // 撤销前回填"新值"
+        e.undoNotes(notes)
+        assertEquals("撤销后应回到旧值", old, notes[0])
+
+        e.redoNotes(notes)
+        assertEquals("重做后应回到新值", new, notes[0])
+    }
+
+    @Test
+    fun `新增_撤销后删掉_重做后加回来`() {
+        val n = note(2, 500)
+        val notes = mutableListOf(note(1, 100))
+        val e = UndoEntry()
+        e.noteAdded(n)
+        notes.add(n)
+
+        e.captureAfter(notes)
+        e.undoNotes(notes)
+        assertEquals(1, notes.size)
+
+        e.redoNotes(notes)
+        assertEquals(2, notes.size)
+        assertEquals(n, notes[1])
+    }
+
+    @Test
+    fun `删除_撤销后插回原位_重做后再次删除`() {
+        val a = note(1, 100); val b = note(2, 200); val c = note(3, 300)
+        val notes = mutableListOf(a, c)           // b 被删掉了
+        val e = UndoEntry()
+        e.noteRemoved(1, b)
+
+        e.captureAfter(notes)
+        e.undoNotes(notes)
+        assertEquals(listOf(a, b, c), notes)
+
+        e.redoNotes(notes)
+        assertEquals(listOf(a, c), notes)
+    }
+
+    @Test
+    fun `一次手势里删加改混在一起_两边都对`() {
+        val n1 = note(1, 100); val n2 = note(2, 200); val n3 = note(3, 300)
+        val notes = mutableListOf(n1, n2, n3)
+        val e = UndoEntry()
+        // 记录：删掉下标 0，改写下标 0（此时是 n2），再加一个 n4
+        e.noteRemoved(0, n1)
+        val removed = notes.removeAt(0)
+        e.noteModified(0, notes[0])               // 旧值 n2
+        val n2new = n2.copy(posX = 0.9f)
+        notes[0] = n2new
+        val n4 = note(4, 400)
+        e.noteAdded(n4)
+        notes.add(n4)
+
+        e.captureAfter(notes)
+        e.undoNotes(notes)
+        assertEquals(listOf(n1, n2, n3), notes)
+
+        e.redoNotes(notes)
+        assertEquals(3, notes.size)
+        assertEquals(n2new, notes[0])
+        assertEquals(n4, notes[2])
+    }
+
+    @Test
+    fun `没有回填新值时_重做不会把音符改坏`() {
+        val old = note(1, 100)
+        val cur = note(1, 100, 0.3f)
+        val notes = mutableListOf(cur)
+        val e = UndoEntry()
+        e.noteModified(0, old)
+        // 故意不调用 captureAfter（模拟异常路径）
+        e.undoNotes(notes)
+        e.redoNotes(notes)
+        assertEquals("没有新值就保持撤销后的样子，不要写 null", old, notes[0])
+    }
+}
