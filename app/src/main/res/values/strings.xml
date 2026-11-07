@@ -8,33 +8,24 @@
     <string name="hint_composer">作者名称</string>
     <string name="label_charter">谱师</string>
     <string name="label_level">难度</string>
-    <string name="hint_level">如 12 或 IN 15</string>
     <string name="label_bpm">BPM</string>
+    <string name="label_bpm_offset">BPM 偏移</string>
     <string name="label_speed">流速</string>
     <string name="label_linepos">判定线位置（%）</string>
     <string name="label_hlines">横线数（每拍分几格）</string>
     <string name="label_vlines">竖线数（左右几个位置）</string>
     <string name="label_delay">延迟（ms）</string>
-    <string name="hint_delay">如 60，可点右侧校准</string>
     <string name="btn_pick_music">选择音视频</string>
     <string name="btn_pick_image">选择背景图</string>
     <string name="btn_calibrate">延迟校准</string>
     <string name="btn_start">开始录制</string>
-    <string name="btn_export">导出 .pez</string>
-    <string name="btn_undo">撤销</string>
-    <string name="btn_restart">重录</string>
-    <string name="btn_back">退出</string>
-    <string name="msg_missing_music">请先选择音频或视频文件</string>
-    <string name="msg_missing_image">请先选择背景图片</string>
-    <string name="msg_missing_fields">请填写曲名、曲师、BPM</string>
     <string name="msg_exported">已导出</string>
+    <string name="msg_draft_saved">已保存到项目草稿</string>
     <string name="msg_export_fail">导出失败</string>
 
     <string name="calib_title">延迟校准</string>
-    <string name="calib_desc">跟着节奏「嗒嗒嗒嗒—滴」，听到「滴」就点一下屏幕（每次点击都会记录）</string>
-    <string name="calib_progress">第 %1$d / 10 次</string>
+    <string name="calib_desc">跟着节奏「嗒嗒嗒嗒—滴」，听到「滴」就点一下屏幕。前几下音符可能比声音早到线（耳机输出延迟），几次之后会自动对齐。</string>
     <string name="calib_done">校准完成</string>
-    <string name="calib_result">平均偏差 %1$d ms</string>
     <string name="calib_apply">应用</string>
     <string name="calib_retry">重来</string>
 </resources>
