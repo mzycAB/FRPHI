@@ -1,8 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<com.piezmaker.VerticalSlideLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/slideStage"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#F2F4F8">
+
+<!-- 第 1 页：原来的整个主界面（向下滑走） -->
+<FrameLayout
+    android:id="@+id/mainPage"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#F2F4F8">
+
 
 <ScrollView
     android:layout_width="match_parent"
@@ -15,13 +24,19 @@
         android:orientation="vertical"
         android:padding="20dp">
 
-        <!-- 标签栏：保留"＋"新建项目按钮 -->
-        <LinearLayout
-            android:id="@+id/tabBar"
+        <!-- 标签栏：保留"＋"新建项目按钮；标签多了可以左右滑动 -->
+        <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="start"
-            android:orientation="horizontal" />
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/tabBar"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="start"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
 
         <TextView
             android:id="@+id/txtTitle"
@@ -31,6 +46,16 @@
             android:textColor="#10141F"
             android:textSize="22sp"
             android:textStyle="bold" />
+
+        <!-- 项目详情：最后一次修改时间（精确到秒，同名项目靠它区分） -->
+        <TextView
+            android:id="@+id/txtLastMod"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="最后修改：—"
+            android:textColor="#98A2B3"
+            android:textSize="12sp" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -216,6 +241,22 @@
                     android:inputType="numberDecimal" />
             </LinearLayout>
 
+            <!-- BPM 偏移：毫秒，正数 = 谱面整体延后（和 Phiedit 的"bpm偏移"一致） -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginEnd="6dp"
+                android:orientation="vertical">
+
+                <TextView style="@style/FieldLabel" android:text="@string/label_bpm_offset" />
+                <EditText
+                    android:id="@+id/editBpmOffset"
+                    style="@style/FieldInput"
+                    android:hint="0"
+                    android:inputType="numberSigned|numberDecimal" />
+            </LinearLayout>
+
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -246,11 +287,37 @@
                 android:orientation="vertical">
 
                 <TextView style="@style/FieldLabel" android:text="@string/label_linepos" />
-                <EditText
-                    android:id="@+id/editLinePos"
-                    style="@style/FieldInput"
-                    android:hint="60"
-                    android:inputType="number" />
+
+                <!-- 判定线位置 + 右边的「检测 BPM」按钮（本地 BPM Detect，不需要联网） -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal">
+
+                    <EditText
+                        android:id="@+id/editLinePos"
+                        style="@style/FieldInput"
+                        android:layout_width="0dp"
+                        android:layout_weight="1"
+                        android:hint="60"
+                        android:inputType="number" />
+
+                    <TextView
+                        android:id="@+id/btnDetectBpm"
+                        android:layout_width="wrap_content"
+                        android:layout_height="match_parent"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_btn_outline"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:gravity="center"
+                        android:minWidth="96dp"
+                        android:paddingStart="8dp"
+                        android:paddingEnd="8dp"
+                        android:text="检测 BPM"
+                        android:textColor="#1E88E5"
+                        android:textSize="12sp" />
+                </LinearLayout>
             </LinearLayout>
 
             <LinearLayout
@@ -363,4 +430,133 @@
         android:textColor="#FFFFFF"
         android:textSize="30sp"
         android:textStyle="bold" />
+
+    <!-- ===== 左侧灰条 + 项目抽屉 ===== -->
+    <View
+        android:id="@+id/sideBar"
+        android:layout_width="10dp"
+        android:layout_height="264dp"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="2dp"
+        android:background="@drawable/bg_side_bar" />
+
+    <!-- 唤出抽屉的判定区域：默认就是灰条本身（略放宽到 12dp）；
+         开「触摸兼容」后由 MainActivity 放大到 36dp×324dp（只用来接手势） -->
+    <View
+        android:id="@+id/sideBarTouch"
+        android:layout_width="12dp"
+        android:layout_height="264dp"
+        android:layout_gravity="start|center_vertical"
+        android:clickable="true"
+        android:focusable="true" />
+
+    <View
+        android:id="@+id/drawerScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/drawerPanel"
+        android:layout_width="152dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#99000000"
+        android:orientation="vertical"
+        android:paddingStart="8dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="8dp"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:layout_marginStart="2dp"
+            android:text="项目"
+            android:textColor="#FFFFFF"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+
+        <ScrollView
+            android:id="@+id/drawerScroll"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/drawerList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingBottom="72dp" />
+        </ScrollView>
+    </LinearLayout>
+
+    <!-- 右侧抽屉（点被框住的项目后从左侧抽屉右边滑出，宽度是左抽屉的 2 倍；中间一条黑线） -->
+    <View
+        android:id="@+id/drawerDivider"
+        android:layout_width="2dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#000000"
+        android:visibility="gone" />
+
+    <!-- 右侧抽屉：内容可能超过一屏（联机面板 + 玩家列表），所以外面套一层可上下滑的 ScrollView -->
+    <ScrollView
+        android:id="@+id/rightPanel"
+        android:layout_width="304dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="#99000000"
+        android:fillViewport="true"
+        android:scrollbars="none"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/rightPanelBody"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="10dp">
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- ===== 右侧灰条：左侧灰条的镜像。滑动它 = 主界面向下滑、从上方进入选曲页（不弹抽屉） ===== -->
+    <View
+        android:id="@+id/sideBarRight"
+        android:layout_width="10dp"
+        android:layout_height="264dp"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="2dp"
+        android:background="@drawable/bg_side_bar" />
+
+    <View
+        android:id="@+id/sideBarRightTouch"
+        android:layout_width="12dp"
+        android:layout_height="264dp"
+        android:layout_gravity="end|center_vertical"
+        android:clickable="true"
+        android:focusable="true" />
+
 </FrameLayout>
+
+<!-- 第 2 页：从上方紧贴着主界面滑进来的选曲页（背景色与主界面一致） -->
+<include
+    android:id="@+id/playPage"
+    layout="@layout/page_play"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent" />
+
+<!-- 两页之间的黑色直线：只在滑动动画中出现，进到第 2 页后立刻隐藏 -->
+<View
+    android:id="@+id/slideDivider"
+    android:layout_width="match_parent"
+    android:layout_height="2dp"
+    android:background="#000000"
+    android:visibility="gone" />
+
+</com.piezmaker.VerticalSlideLayout>
