@@ -1,0 +1,5 @@
+accessWidener v2 named
+
+# 多人游戏界面加 "FRPHIMC 联机" 按钮：Screen.addDrawableChild 是 protected，
+# 打成 public 后 ScreenEvents.AFTER_INIT 里可以直接调用（无需 mixin）。
+accessible method net/minecraft/client/gui/screen/Screen addDrawableChild (Lnet/minecraft/client/gui/Element;)Lnet/minecraft/client/gui/Element;

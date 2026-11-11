@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "frphimc",
+  "version": "${version}",
+  "name": "FRPHIMC",
+  "description": "FRPHI 联机模组：加入 FRPHI（手机端）开的房间，玩家列表互通、聊天框互通。",
+  "authors": [
+    "mzycAB"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.mzycab.frphimc.client.FRPHIMCClient"
+    ]
+  },
+  "mixins": [
+    "frphimc.mixins.json"
+  ],
+  "accessWidener": "frphimc.accesswidener",
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "minecraft": "~1.20.4",
+    "java": ">=17",
+    "fabric-api": "*"
+  }
+}
