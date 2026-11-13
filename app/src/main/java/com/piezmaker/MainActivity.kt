@@ -4070,8 +4070,9 @@ class MainActivity : Activity() {
             借鉴内容：RPE 谱面解析（prpr/src/parse/rpe.rs）、判定与音效映射（judge.rs）、
             判定线高度、双押提示、hit_fx 等渲染参数，以及 PEZ 谱面格式的兼容实现。
 
-            说明：本项目中参考 / 改编自 Phira 的部分按 GPL-3.0 分发。
-            许可证全文：https://www.gnu.org/licenses/gpl-3.0.html
+            说明：本项目仅参考 Phira 的谱面格式与判定语义（见上），以 Kotlin 独立实现，
+            未包含或改编其源码，不构成 GPL-3.0 衍生作品；本声明仅作致谢，不代表本项目按 GPL 分发。
+            许可证全文（Phira 自身）：https://www.gnu.org/licenses/gpl-3.0.html
             """.trimIndent()
         ))
 
@@ -4181,8 +4182,8 @@ class MainActivity : Activity() {
             本项目原创代码以 GNU GPL-3.0 开源，可自由使用、修改和分发；
             分发修改后的版本时须同样以 GPL-3.0 开放源码，并保留版权与许可声明。
 
-            说明：项目中参考 / 改编自 Phira 的部分同样遵循 GPL-3.0；
-            Re:PhiEdit 相关部分遵循其 MIT 许可证。
+            说明：项目中借鉴的 Phira / Re:PhiEdit / 噪域等算法思路均为独立实现，
+            不构成对上述项目的衍生作品；各上游项目自身的许可证见上文对应条目。
             """.trimIndent()
         ))
         rightPanelBody.addView(body(

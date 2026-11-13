@@ -644,26 +644,27 @@ class RecordActivity : Activity() {
             e.setOnEditorActionListener { v, _, _ -> v.text.toString().toFloatOrNull()?.let(apply); v.clearFocus(); true }
             e.setOnFocusChangeListener { _, has -> if (!has) e.text.toString().toFloatOrNull()?.let(apply) }
         }
+        // ★ 谱面级参数（BPM/偏移/横线/竖线）统一走 recordView.editMeta：同步网格 + 记一步撤销
         menuNum(bpmMenuEdit, { fmtNum(meta.bpm.toFloat()) }) { v ->
+            recordView.editMeta(bpm = v.toDouble(), segments = emptyList())
             meta = meta.copy(bpm = v.toDouble(), bpmSegments = emptyList())
-            recordView.bpm = meta.bpm
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         menuNum(bpmOffsetMenuEdit, { fmtNum(meta.bpmOffsetMs.toFloat()) }) { v ->
+            recordView.editMeta(bpmOffsetMs = v.toDouble())
             meta = meta.copy(bpmOffsetMs = v.toDouble())
-            recordView.bpmOffsetMs = meta.bpmOffsetMs
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         menuNum(hLinesMenuEdit, { meta.hLines.toString() }) { v ->
             val n = v.toInt().coerceIn(1, 64)
+            recordView.editMeta(hLines = n)
             meta = meta.copy(hLines = n)
-            recordView.hLines = n
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         menuNum(vLinesMenuEdit, { meta.vLines.toString() }) { v ->
             val n = v.toInt().coerceIn(1, 64)
+            recordView.editMeta(vLines = n)
             meta = meta.copy(vLines = n)
-            recordView.vLines = n
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         // 流速：写当前判定线（框住多条时一起改）+ 项目设置；每次输入都能再改，不限次数
@@ -745,6 +746,19 @@ class RecordActivity : Activity() {
             showPlayMenu()
         }
         recordView.onLinePoseChanged = { refreshLineInputs() }
+        // 撤销/重做把 BPM / 偏移 / 横线 / 竖线 还原后，写回 meta 并落盘 + 刷新「其他」输入框
+        recordView.onMetaSnapRestore = { s ->
+            meta = meta.copy(
+                bpm = s.bpm, bpmOffsetMs = s.bpmOffsetMs,
+                hLines = s.hLines, vLines = s.vLines, bpmSegments = s.bpmSegments
+            )
+            bpmMenuEdit.setText(fmtNum(s.bpm.toFloat()))
+            bpmOffsetMenuEdit.setText(fmtNum(s.bpmOffsetMs.toFloat()))
+            hLinesMenuEdit.setText(s.hLines.toString())
+            vLinesMenuEdit.setText(s.vLines.toString())
+            saveMetaToTab()
+            refreshInfo()
+        }
         speedEdit.setOnEditorActionListener { v, _, _ ->
             applySpeedFromInput()
             v.clearFocus()
@@ -758,12 +772,17 @@ class RecordActivity : Activity() {
 
         recordView.bpm = meta.bpm
         recordView.bpmOffsetMs = meta.bpmOffsetMs      // BPM 偏移：网格/吸附按它平移
+        recordView.syncMetaSegments(meta.bpmSegments)  // 撤销 BPM 改动时能连带还原分段
         recordView.hLines = meta.hLines
         recordView.vLines = meta.vLines
         recordView.linePosPct = meta.linePosPct
         recordView.pass = 1
         recordView.playheadProvider = { currentPlayhead() }
         recordView.playingProvider = { mediaPlayer?.isPlaying == true }
+        // 打击音效提前量 = 设备输出延迟 + 一帧余量（判定只能落在帧边界上，见 RecordView.hitSoundLeadMs）。
+        // 夹到 [0, 80]：蓝牙耳机这类估算不到的情况最多提前 80ms，不至于把音效甩到拍子前面。
+        recordView.hitSoundLeadMs = (audioOutputLatencyMs + 16L).coerceIn(0L, 80L)
+        DebugLog.add("audio", "hitSoundLead=${recordView.hitSoundLeadMs}ms (outputLatency=$audioOutputLatencyMs)")
         recordView.setBackgroundImage(meta.imageUri)
 
         btnPass1.setOnClickListener { if (recordView.noiseEditActive) recordView.selectNoiseCorner(0) else switchPass(1) }
@@ -1517,7 +1536,7 @@ class RecordActivity : Activity() {
             score = score, hit = hit, good = rv.playGoodCount, total = total,
             maxCombo = maxCombo, miss = miss,
             best = best.coerceAtLeast(0), isNewBest = isNew,
-            // 右侧 9:16 长方形 = 选曲页那块（用户在选曲页换过的图优先，否则用项目的背景图）
+            // 右侧 9:16 长方形 = 主界面那块（同一张图；没选图就是灰底，任何入口都不回退成曲子背景）
             coverUri = playCoverUri(),
             // 背景 = 打歌界面那张高斯模糊图（同一张，用户点名）
             blurredBg = rv.blurredBgForEnding()
@@ -1555,13 +1574,22 @@ class RecordActivity : Activity() {
 
     // ---------------------------------------------------------------- 打歌暂停菜单（Phira 风格）
 
-    /** 结算右侧长方形显示什么图：选曲页选过的封面 > 项目背景图 > 没有（灰底） */
+    /**
+     * 结算右侧长方形显示什么图。
+     *
+     * ★ 用户点名的**唯一**来源：主界面/选曲页那块 9:16 长方形用的图
+     *   （`frphi_play/cover`，`restorePlayCover()` 就是它）。
+     *   不管是「选曲页 START」还是「编辑页 AUTOPLAY / PLAY」进来的，
+     *   结算都必须和主界面那块**同一张图**；没选过图就是那块灰底
+     *   （`0xFFC8CDD6`），**绝不能**回退成曲子的背景图 `meta.imageUri`
+     *   （上一轮只在选曲页入口拦住了，编辑页入口还在漏，用户点名）。
+     */
     private fun playCoverUri(): String? {
-        try {
-            val c = getSharedPreferences("frphi_play", 0).getString("cover", null)
-            if (!c.isNullOrEmpty()) return c
-        } catch (_: Exception) { }
-        return meta.imageUri.takeIf { it != Uri.EMPTY }?.toString()
+        return try {
+            getSharedPreferences("frphi_play", 0).getString("cover", null)?.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private var playMenuOverlay: ViewGroup? = null
@@ -2397,10 +2425,11 @@ class RecordActivity : Activity() {
             /** 一键应用 BPM：写回当前项目（BPM + BPM 偏移），退出到主界面也是新值 */
             override fun applyBpm(bpm: Double, offsetMs: Double?) {
                 // 应用的是单 BPM：丢掉多 BPM 分段（否则导出时两套 BPM 会打架）
+                // 走 editMeta ⇒ View 立刻生效 + 记一步撤销（分段也会跟着进快照，撤销能找回）
+                recordView.editMeta(bpm = bpm, bpmOffsetMs = offsetMs, segments = emptyList())
                 meta = if (offsetMs != null)
                     meta.copy(bpm = bpm, bpmOffsetMs = round3(offsetMs), bpmSegments = emptyList())
                 else meta.copy(bpm = bpm, bpmSegments = emptyList())
-                recordView.bpm = bpm
                 saveMetaToTab()
                 refreshInfo()
                 toast("BPM 已应用：" + trimNum(meta.bpm))
@@ -2423,14 +2452,22 @@ class RecordActivity : Activity() {
                 composer?.let { m = m.copy(composer = it) }
                 charter?.let { m = m.copy(charter = it) }
                 level?.let { m = m.copy(level = it) }
+                var newBpm: Double? = null
+                var newOff: Double? = null
+                var newH: Int? = null
+                var newV: Int? = null
                 bpm?.let { v ->
                     if (v > 20.0 && v < 1000.0) {
                         // 手动/AI 指定单一 BPM：多 BPM 分段作废
                         m = m.copy(bpm = v, bpmSegments = emptyList())
-                        recordView.bpm = v
+                        newBpm = v
                     }
                 }
-                bpmOffset?.let { m = m.copy(bpmOffsetMs = round3(it.coerceIn(-60000.0, 60000.0))) }
+                bpmOffset?.let {
+                    val x = round3(it.coerceIn(-60000.0, 60000.0))
+                    m = m.copy(bpmOffsetMs = x)
+                    newOff = x
+                }
                 speed?.let {
                     // 编辑页的「流速」就是当前判定线的流速（关键帧选中时改那一帧）
                     val sp = it.coerceIn(0.05, 100.0).toFloat()
@@ -2443,8 +2480,16 @@ class RecordActivity : Activity() {
                     recordView.applyLinePosPct(p)   // 走撤销事务（撤销覆盖审计补的遗漏）
                 }
                 delay?.let { m = m.copy(delayMs = it.coerceIn(-2000, 2000)) }
-                hLines?.let { m = m.copy(hLines = it.coerceIn(1, 16)) }
-                vLines?.let { m = m.copy(vLines = it.coerceIn(1, 32)) }
+                hLines?.let { val n = it.coerceIn(1, 16); m = m.copy(hLines = n); newH = n }
+                vLines?.let { val n = it.coerceIn(1, 32); m = m.copy(vLines = n); newV = n }
+                // ★ BPM/偏移/横线/竖线必须**同步进 View**（以前只写了 meta ⇒ AI 改了横线数、BPM 偏移，
+                //   编辑网格不动，看起来像没生效）；editMeta 同时记一步撤销。
+                if (newBpm != null || newOff != null || newH != null || newV != null) {
+                    recordView.editMeta(
+                        bpm = newBpm, bpmOffsetMs = newOff, hLines = newH, vLines = newV,
+                        segments = if (newBpm != null) emptyList() else null
+                    )
+                }
                 meta = m
                 txtTitle.text = meta.name.ifEmpty { "未命名" }
                 saveMetaToTab()

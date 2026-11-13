@@ -130,8 +130,8 @@ class RecordView @JvmOverloads constructor(
         /** 手指「最近还在动」的时限：超过这个时间没动，累计行程作废（红键必须真的在划） */
         const val FLICK_MOVE_FRESH_MS = 140L
         /**
-         * Phira `judge.rs::LIMIT_PERFECT` = 0.08s：偏差在 80ms 内是 PERFECT（**蓝打击**），
-         * 之外（到判定窗口 220ms）是 GOOD（**黄打击**）。
+         * Phira `judge.rs::LIMIT_PERFECT` = 0.08s：偏差在 80ms 内是 PERFECT（淡黄打击），
+         * 之外（到判定窗口 220ms）是 GOOD（淡蓝打击）。
          */
         const val PERFECT_MS = 80L
         /** 漏判回看窗口：卡帧/掉帧时也能把刚过去的音符补判成 MISS */
@@ -163,7 +163,13 @@ class RecordView @JvmOverloads constructor(
         const val NOTE_W_RATIO = 0.13175016f
         /** Phira 谱面视口宽高比：16:9 */
         const val CHART_ASPECT = 16f / 9f
-        /** Phira 判定线长度：info.yml 的 lineLength（默认 6 = 单边 6 个半屏宽，旋转时就是贯穿屏幕的长条） */
+        /**
+         * Phira 判定线的名义长度：info.yml 的 `lineLength`（默认 6 world 单位）。
+         *
+         * ★ 只用来解释"Phira 为什么永远看不到端点"，**绘制不再乘它**（用户点名：
+         *   判定线是直线不是线段）。真正画的时候用 [halfLenCoveringViewport] 按视锥算，
+         *   恰好覆盖当前屏幕，既不会露端点，也不会画一堆屏幕外的像素。
+         */
         const val LINE_LENGTH = 6f
         /** 单一音效最多同时几条流（快速连点时掐最旧的，保证总有声音） */
         const val SND_MAX_PER_TYPE = 8
@@ -367,6 +373,16 @@ class RecordView @JvmOverloads constructor(
     var onLinesChanged: (() -> Unit)? = null
     /** 谱面/剪贴板变了（联机同步用；一次触摸 = 一次回调，因为都收在 endTx 里） */
     var onChartChanged: (() -> Unit)? = null
+    /**
+     * 撤销/重做把谱面级参数（BPM/偏移/横线/竖线/分段）还原后通知 Activity，
+     * 由它写回 `meta`、落盘并刷新输入框（见 [editMeta]）。
+     */
+    var onMetaSnapRestore: ((UndoEntry.MetaSnap) -> Unit)? = null
+    /**
+     * 多 BPM 分段的**镜像**：View 自己不解释它，只为让撤销快照能连带还原分段
+     * （`applyBpm` 改单 BPM 时会把分段清空，撤销必须能一起找回来）。
+     */
+    private var metaSegMirror: List<BpmSegment> = emptyList()
 
     /** 现在有手指按在屏幕上（联机收到远端草稿时要等松手再套用，否则音符下标会错位） */
     fun isTouchingNow(): Boolean {
@@ -841,9 +857,60 @@ class RecordView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * 改**谱面级参数**（BPM / BPM 偏移 / 横线数 / 竖线数 / 多 BPM 分段），null = 不改。
+     *
+     * ★ 这是「其他」面板输入框和 AI `applyMeta` 的**唯一入口**，做两件事：
+     *   ① 立刻同步到本 View（以前 AI 改横线数/偏移只写了 meta，编辑网格不动，看起来"没生效"）；
+     *   ② 整批算**一步撤销**（以前 BPM 改错了撤不回来，而 BPM 一改整个时间网格全变）。
+     * 撤销/重做时通过 [onMetaSnapRestore] 把快照交回 Activity 写进 meta 并落盘。
+     */
+    fun editMeta(
+        bpm: Double? = null,
+        bpmOffsetMs: Double? = null,
+        hLines: Int? = null,
+        vLines: Int? = null,
+        segments: List<BpmSegment>? = null
+    ) {
+        val own = tx == null
+        if (own) beginTx()
+        if (!undoing) tx?.let { if (it.metaBefore == null) it.metaBefore = metaSnapNow() }
+        try {
+            bpm?.let { this.bpm = it }
+            bpmOffsetMs?.let { this.bpmOffsetMs = it }
+            hLines?.let { this.hLines = it.coerceIn(1, 64) }
+            vLines?.let { this.vLines = it.coerceIn(1, 64) }
+            segments?.let { metaSegMirror = it }
+        } finally {
+            if (own) endTx()
+        }
+        invalidate()
+    }
+
+    /** 谱面级参数的当前快照（BPM 分段只存引用，列表很小） */
+    private fun metaSnapNow() =
+        UndoEntry.MetaSnap(bpm, bpmOffsetMs, hLines, vLines, metaSegMirror)
+
+    /**
+     * 载入谱面时同步一次多 BPM 分段镜像（不进撤销栈）。
+     * 不同步的话"第一次改 BPM 再撤销"会把分段还原成空 —— 那就等于把分段吃掉了。
+     */
+    fun syncMetaSegments(segments: List<BpmSegment>) {
+        metaSegMirror = segments
+    }
+
+    /** 撤销/重做把谱面级参数还原（View 自己 + 回调 Activity 写回 meta） */
+    private fun applyMetaSnap(s: UndoEntry.MetaSnap) {
+        bpm = s.bpm
+        bpmOffsetMs = s.bpmOffsetMs
+        hLines = s.hLines
+        vLines = s.vLines
+        metaSegMirror = s.bpmSegments
+        onMetaSnapRestore?.invoke(s)
+    }
+
     /** 一次触摸（或一次按钮操作）= 一个撤销步 */
-    private fun beginTx(init: ((UndoEntry) -> Unit)? = null) {
-        if (!undoing && tx == null) {
+    private fun beginTx(init: ((UndoEntry) -> Unit)? = null) {        if (!undoing && tx == null) {
             tx = UndoEntry()
             init?.invoke(tx!!)
         }
@@ -955,8 +1022,7 @@ class RecordView @JvmOverloads constructor(
     }
 
     /** 改动噪域（拖角/关键帧/显示/深浅/新建/复制/删除/图层）前先整份快照 */
-    private fun noiseMutate(block: () -> Unit) {
-        if (!undoing) tx?.let {
+    private fun noiseMutate(block: () -> Unit) {        if (!undoing) tx?.let {
             if (it.noiseBefore == null) {
                 it.noiseBefore = UndoEntry.NoiseSnap(
                     ArrayList(noiseAreas),
@@ -1393,6 +1459,7 @@ class RecordView @JvmOverloads constructor(
             ArrayList(noiseLayerOrder)
         )
         e.videosAfter = UndoEntry.VideoSnap(videos.map { v -> v.copy() })
+        e.metaAfter = metaSnapNow()
         undoing = true
         try {
             // 音符：撤追加 → 还原改写 → 按原下标插回删除的（见 UndoEntry.undoNotes）
@@ -1404,6 +1471,7 @@ class RecordView @JvmOverloads constructor(
             e.layersBefore?.let { declaredLayers.clear(); declaredLayers.addAll(it) }
             e.noiseBefore?.let { applyNoiseSnap(it) }
             e.videosBefore?.let { applyVideoSnap(it) }
+            e.metaBefore?.let { applyMetaSnap(it) }
         } finally {
             undoing = false
         }
@@ -1429,6 +1497,7 @@ class RecordView @JvmOverloads constructor(
             e.layersAfter?.let { declaredLayers.clear(); declaredLayers.addAll(it) }
             e.noiseAfter?.let { applyNoiseSnap(it) }
             e.videosAfter?.let { applyVideoSnap(it) }
+            e.metaAfter?.let { applyMetaSnap(it) }
         } finally {
             undoing = false
         }
@@ -1545,7 +1614,7 @@ class RecordView @JvmOverloads constructor(
     /** 结算界面用：这一把的最高连击 / 漏掉的音符数 */
     val playMaxCombo: Int get() = maxCombo
     val playMissCount: Int get() = missCount
-    /** 这一把里「黄打击」的数量（PERFECT 之外的命中；黄键/红键永远算黄打击） */
+    /** 这一把里 GOOD 的数量（只有蓝键/长条的偏差 > 80ms 才算；黄键/红键按 Phira 恒 PERFECT） */
     val playGoodCount: Int get() = goodCount
 
     /** 手打模式的判定窗口（比 Autoplay 的略宽一点，手指落点有误差） */
@@ -1557,10 +1626,18 @@ class RecordView @JvmOverloads constructor(
      */
     private var judgedFlags = BooleanArray(0)
     private var judgedCount = 0
+    /**
+     * 音效"已经响过"的音符下标（只给 [hitSoundLeadMs] 的**预响**用）。
+     * 和 judgedFlags 同生命周期：预响先把音效打出去并在这里记一笔，
+     * 到线时 judgeHit 看到这笔就不再重放（否则会响两下）。
+     */
+    private var sndDoneFlags = BooleanArray(0)
 
     private fun resetJudged() {
         if (judgedFlags.size != notes.size) judgedFlags = BooleanArray(notes.size)
         else java.util.Arrays.fill(judgedFlags, false)
+        if (sndDoneFlags.size != notes.size) sndDoneFlags = BooleanArray(notes.size)
+        else java.util.Arrays.fill(sndDoneFlags, false)
         judgedCount = 0
     }
 
@@ -1570,6 +1647,12 @@ class RecordView @JvmOverloads constructor(
     }
 
     private fun judgedAt(i: Int): Boolean = i >= 0 && i < judgedFlags.size && judgedFlags[i]
+
+    private fun sndDoneAt(i: Int): Boolean = i >= 0 && i < sndDoneFlags.size && sndDoneFlags[i]
+
+    private fun markSndDone(i: Int) {
+        if (i >= 0 && i < sndDoneFlags.size) sndDoneFlags[i] = true
+    }
 
     // 每条判定线自己的音符下标（画的时候只遍历自己那几个，不用把所有音符扫一遍）
     private var noteIdxVersion = 0
@@ -1767,14 +1850,19 @@ class RecordView @JvmOverloads constructor(
     private var maxCombo = 0
     private var missCount = 0
     private var hitCount = 0
-    /** 黄打击（GOOD）个数：只有蓝键/长条的「不在 80ms 内」才算；黄键/红键恒算黄打击 */
+    /** GOOD 个数：只有蓝键/长条的「偏差 > 80ms」才算；黄键/红键在 Phira 里恒为 PERFECT */
     private var goodCount = 0
     /** 自己打：这一局从哪个时间点开始（分母只算这之后的音符）+ 缓存的分母 */
     private var manualStartMs = 0L
     private var hudManualTotal = -1
     private var lastJudgeNow = 0L
-    /** 正在通过判定线的长条持续特效（头部到线 → 尾部离线的整段时间） */
-    private class HoldFx(val idx: Int, val untilMs: Long)
+    /**
+     * 正在通过判定线的长条持续特效（头部到线 → 尾部离线的整段时间）
+     * [tier] 跟着**头部那一下**的判定档走（0=PERFECT 淡黄 / 1=GOOD 淡蓝）：
+     * 用户点名「长条第一下是黄的就一直是黄的，第一下是蓝的一直是蓝的」，
+     * 以前这里没设 colorFilter，所以整段一直是白的。
+     */
+    private class HoldFx(val idx: Int, val untilMs: Long, val tier: Int)
     private val holdFxList = mutableListOf<HoldFx>()
     private val judgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
@@ -2279,12 +2367,20 @@ class RecordView @JvmOverloads constructor(
     }
     private val livePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val texPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { isAntiAlias = true }
-    /** 蓝打击 / 黄打击的着色（Phira：fx_perfect 蓝、fx_good 金） */
-    private val fxBlueFilter = android.graphics.PorterDuffColorFilter(
-        0xFF4FC3F7.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
+    /**
+     * 蓝打击 / 黄打击的着色。
+     *
+     * ★ 颜色取自 Phira `prpr/src/core/resource.rs` 的 ResPackInfo 默认值（已逐字节核对）：
+     *   · `default_perfect() = 0xe1ffec9f` ⇒ ARGB(225,255,236,159) = **淡黄**
+     *   · `default_good()    = 0xebb4e1ff` ⇒ ARGB(235,180,225,255) = **淡蓝**
+     *   以前这里写反了（perfect 蓝 / good 金），所以 Autoplay（全是 PERFECT）会冒出蓝色打击，
+     *   蓝键/长条的蓝黄两档也整体颠倒（用户点名）。
+     */
+    private val fxPerfectFilter = android.graphics.PorterDuffColorFilter(
+        0xE1FFEC9F.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
     )
-    private val fxGoldFilter = android.graphics.PorterDuffColorFilter(
-        0xFFFFD54F.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
+    private val fxGoodFilter = android.graphics.PorterDuffColorFilter(
+        0xEBB4E1FF.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
     )
 
     /**
@@ -2359,6 +2455,21 @@ class RecordView @JvmOverloads constructor(
     var soundEnabled: Boolean = false
         set(value) { field = value; invalidate() }
 
+    /**
+     * 打击音效**提前量**（ms，0 = 不提前）。
+     *
+     * 为什么会有"慢半拍"：判定只在**帧边界**发生，`now` 第一次超过音符时间时已经晚了
+     * 0~1 帧；SoundPool 的一下还要再穿过输出缓冲（DAC/系统混音）才真的出声。
+     * 两段叠起来就是耳朵能分出来的延迟。
+     *
+     * 所以 Autoplay 里音效在音符到线**之前** `hitSoundLeadMs` 就先响
+     * （见 [tickAutoPlay] 的预响扫），而判定/特效/音符消失仍然严格落在到线那一刻 ——
+     * 画面上不会提前消失，只有声音对齐拍子。
+     * 数值由 Activity 按设备输出延迟估（`AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER /
+     * PROPERTY_OUTPUT_SAMPLE_RATE`）再补一帧余量（[AudioLatency]）。
+     */
+    var hitSoundLeadMs: Long = 0L
+
     /** 资源包里的音效优先（ogg/wav/mp3）；没选资源包时才用内置音效。选了包但没有音效文件 → 静音 */
     private fun loadSfx(sp: SoundPool, name: String, asset: String): Int {
         val pack = resPack
@@ -2387,7 +2498,15 @@ class RecordView @JvmOverloads constructor(
                 )
                 .build()
             sp.setOnLoadCompleteListener { _, sampleId, status ->
-                if (status != 0) Log.w(TAG, "SoundPool load failed sample=$sampleId status=$status")
+                if (status != 0) {
+                    Log.w(TAG, "SoundPool load failed sample=$sampleId status=$status")
+                } else {
+                    // ★ 预热：样本一加载完就以 **0 音量**空播一次。
+                    //   SoundPool 的第一次 play 要现场分配流 + 混音通道（十几到几十毫秒），
+                    //   不预热的话第一下打击就会"迟半拍"（用户报的打击音效延迟有一部分是这个）。
+                    //   随后各音效交错打出去，后面每一下都是已分配好的流。
+                    try { sp.play(sampleId, 0f, 0f, 0, 0, 1f) } catch (_: Exception) { }
+                }
             }
             sndClick = loadSfx(sp, "click", "sounds/click.ogg")
             sndDrag = loadSfx(sp, "drag", "sounds/drag.ogg")
@@ -2441,7 +2560,7 @@ class RecordView @JvmOverloads constructor(
     }
 
     // 打击特效（Phira hit_fx 精灵图 8x7 = 56 帧）
-    /** [tier] 0 = 蓝打击（PERFECT），1 = 黄打击（GOOD；黄键/红键恒定这一档） */
+    /** [tier] 0 = PERFECT（淡黄），1 = GOOD（淡蓝）；黄键/红键按 Phira 恒为 PERFECT */
     class HitFx(val x: Float, val y: Float, val at: Long, val tier: Int = 0)
     private val hitFxList = mutableListOf<HitFx>()
     // 打击特效参数（默认 = 内置贴图 8x7 / 460ms / 0.9 倍；导入资源包后按 info.yml 覆盖）
@@ -2487,7 +2606,7 @@ class RecordView @JvmOverloads constructor(
         hitFxScale = pack?.hitFxScale ?: 0.9f
     }
 
-    /** 在 (x,y) 播一次 Phira 打击特效；[tier] 0=蓝打击（PERFECT） 1=黄打击（GOOD） */
+    /** 在 (x,y) 播一次 Phira 打击特效；[tier] 0=PERFECT（淡黄） 1=GOOD（淡蓝） */
     fun spawnHitFx(x: Float, y: Float, tier: Int = 0) {
         if (hitFxList.size > 14) hitFxList.removeAt(0)
         hitFxList.add(HitFx(x, y, SystemClock.elapsedRealtime(), tier))
@@ -2739,6 +2858,31 @@ class RecordView @JvmOverloads constructor(
         gridPaint.strokeWidth = dp(2f)
     }
 
+    /**
+     * 判定线局部坐标下"刚好铺满屏幕"的半长（= 判定线的视锥剔除）。
+     *
+     * 绘制时是 `canvas.translate(lcX, lcY)` → `canvas.rotate(-rot)`，画 `(-L,0)..(L,0)`。
+     * 于是屏幕点 (sx,sy) 在这条线的局部坐标里是：
+     *   x = (sx-lcX)·cos(a) + (sy-lcY)·sin(a)， a = -rot
+     * 取屏幕四角 |x| 的最大值就是最小够用的半长：线永远贯穿屏幕，也永远不多画。
+     * 纯算术、无分配，每帧每条线调用一次也不产生垃圾。
+     */
+    private fun halfLenCoveringViewport(lcX: Float, lcY: Float, rot: Float, w: Float, h: Float): Float {
+        val a = Math.toRadians(-rot.toDouble())
+        val ca = Math.cos(a).toFloat()
+        val sa = Math.sin(a).toFloat()
+        // 四个角：(0,0) (w,0) (0,h) (w,h) —— 逐项算，别建数组
+        val d0 = Math.abs((-lcX) * ca + (-lcY) * sa)
+        val d1 = Math.abs((w - lcX) * ca + (-lcY) * sa)
+        val d2 = Math.abs((-lcX) * ca + (h - lcY) * sa)
+        val d3 = Math.abs((w - lcX) * ca + (h - lcY) * sa)
+        var m = d0
+        if (d1 > m) m = d1
+        if (d2 > m) m = d2
+        if (d3 > m) m = d3
+        return m.coerceAtLeast(1f)
+    }
+
     // ------------------------------------------------------------ 绘制
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -2894,12 +3038,13 @@ class RecordView @JvmOverloads constructor(
             canvas.save()
             canvas.translate(lcX, lcY)
             canvas.rotate(-rot)
-            // 判定线长度按 Phira：line_length = 6 是 **world 单位**（不是"半屏宽个数"），
-            // 屏幕半宽 = aspect world，所以单边 = line_length × w / (2 × aspect)；
-            // 且普通 line.png 线在 rpe.rs 解析时 scaleX 会再乘 0.5（无 text/paint/attachUI 时）。
-            // 综合下来默认单边 ≈ 0.84 屏宽（原来错算成 3 屏宽，长了 3.5 倍）。
-            val lineScaleX = lScaleX.coerceIn(0.02f, 20f)
-            val lineHalfLen = w * LINE_LENGTH / (2f * CHART_ASPECT) * 0.5f * lineScaleX
+            // ★ 判定线是**无限直线**，不是线段（用户点名，已对着 phira / phiedit 源码核实）：
+            //   · phira  `prpr/src/core/line.rs`: `draw_line(-len, 0., len, 0., ...)`，len = lineLength(6)。
+            //   · phiedit `renderer.js`: `line_length = 2000 * scaleX`，端点全部在屏幕外。
+            //   两边的"长度"只是**把端点推出视口**的手段，没有端点语义（缩放再小也不该看见线头）。
+            //   所以这里按视锥算：把屏幕四角反变换到线的局部坐标，取 |x| 的最大值，
+            //   正好铺满当前视口 —— 永不露端点，也不多画一个屏幕外的像素（视锥剔除）。
+            val lineHalfLen = halfLenCoveringViewport(lcX, lcY, rot, w, h) + linePaint.strokeWidth
             if (lineA > 0.004f) {
                 when (l.kind) {
                     // 图片线：按 RPE 语义画（1 像素 = 1 单位，缩放乘在尺寸上），原点在线中心
@@ -3023,11 +3168,19 @@ class RecordView @JvmOverloads constructor(
             lastPlayLogSec = sec
             if (visSb != null && visSb.isNotEmpty()) DebugLog.add("autoplay", "t=${sec}s 可见线$visSb")
             // 同一秒里"可能在画面上的长条"（排查长条残留）
+            // ★ 用**按时间排序的下标 + 二分**只扫 [now-1500, now+1500] 这一段：
+            //   以前是 `for (n in notes)` 整份扫，44 万音符的大谱每秒扫一次，
+            //   刚好卡在绘制里 ⇒ 每一秒掉一帧。
             val hs = StringBuilder()
             var hn = 0
-            for (n in notes) {
-                if (n.type != 2 || hn >= 16) continue
-                if (now < n.startMs - 1500 || now > n.endMs + 500) continue
+            val holdOrder = sortedPlayIndex()
+            var hk = lowerBoundStartMs(holdOrder, now - 1500L)
+            while (hk < holdOrder.size && hn < 16) {
+                val n = notes[holdOrder[hk]]
+                hk++
+                if (n.startMs > now + 1500L) break
+                if (n.type != 2) continue
+                if (now > n.endMs + 500L) continue
                 hs.append(" H(").append(n.lineId).append(',').append(Math.round(n.posX * 100f) / 100f)
                     .append(',').append(n.startMs).append('-').append(n.endMs).append(')')
                 hn++
@@ -3120,9 +3273,10 @@ class RecordView @JvmOverloads constructor(
                 val col = idx % hitFxCols
                 val row = idx / hitFxCols
                 texPaint.alpha = 255
-                // 蓝打击 / 黄打击：Phira 是 fx_perfect / fx_good 两张图；资源包没给就
-                // 把同一张 hit_fx 染成蓝/金两色（SRC_IN 只吃 alpha，白/灰精灵图能染干净）
-                texPaint.colorFilter = if (fx.tier == 0) fxBlueFilter else fxGoldFilter
+                // PERFECT / GOOD 两档：Phira 是 fx_perfect / fx_good 同一张精灵图 + 不同着色
+                // （perfct 淡黄、good 淡蓝，见 fxPerfectFilter/fxGoodFilter 的颜色出处）。
+                // 资源包没给就照这套颜色染，白/灰精灵图能染干净。
+                texPaint.colorFilter = if (fx.tier == 0) fxPerfectFilter else fxGoodFilter
                 fxSrc.set(col * fw, row * fh, (col + 1) * fw, (row + 1) * fh)
                 fxDst.set(fx.x - size / 2, fx.y - size / 2, fx.x + size / 2, fx.y + size / 2)
                 canvas.drawBitmap(fxBmp, fxSrc, fxDst, texPaint)
@@ -4919,13 +5073,6 @@ class RecordView @JvmOverloads constructor(
 
     fun selectVideo(index: Int) {
         videoIndex = if (index in videos.indices) index else -1
-        invalidateVideoRows()
-        invalidate()
-    }
-
-    fun closeVideoEdit() {
-        if (videoIndex == -1) return
-        videoIndex = -1
         invalidateVideoRows()
         invalidate()
     }
@@ -6891,7 +7038,7 @@ class RecordView @JvmOverloads constructor(
                 val fx = it.next()
                 if (fx.idx !in notes.indices || now > fx.untilMs) { it.remove(); continue }
                 val n = notes[fx.idx]
-                if (lineOf(n).id != id) continue
+                if (n.lineId != id) continue
                 val a = Math.toRadians(-rot.toDouble())
                 val xl = (n.posX + 1f) / 2f * width - width / 2f
                 val px = lcX + (xl * Math.cos(a)).toFloat()
@@ -6902,10 +7049,15 @@ class RecordView @JvmOverloads constructor(
                 val col = idx % hitFxCols
                 val row = idx / hitFxCols
                 texPaint.alpha = 215
+                // ★ 和头部那一下同色：Phira `note.rs` 的 Hold 粒子用的是
+                //   `JudgeStatus::Hold(perfect, ..)` 里记的 perfect，所以整段长条一个颜色，
+                //   不会"头一下黄、按住变白"（用户点名）。
+                texPaint.colorFilter = if (fx.tier == 0) fxPerfectFilter else fxGoodFilter
                 fxSrc.set(col * fw, row * fh, (col + 1) * fw, (row + 1) * fh)
                 fxDst.set(px - size / 2, py - size / 2, px + size / 2, py + size / 2)
                 canvas.drawBitmap(holdFxFxBmp, fxSrc, fxDst, texPaint)
             }
+            texPaint.colorFilter = null
         }
     }
 
@@ -8409,6 +8561,21 @@ class RecordView @JvmOverloads constructor(
         return playSortedIdx
     }
 
+    /**
+     * 在按 [RecordedNote.startMs] 升序的 [order] 上二分出第一个 `startMs >= t` 的位置。
+     * 打歌判定和「每秒长条调试日志」都要按时间窗取一段，以前每处各写一份二分，
+     * 收在这里一份（[tickAutoPlay] / onDraw 共用）。
+     */
+    private fun lowerBoundStartMs(order: IntArray, t: Long): Int {
+        var lo = 0
+        var hi = order.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (notes[order[mid]].startMs < t) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
     /** Autoplay：音符到判定线自动 PERFECT + 特效 + 音效。
      *  只在「落线后 AUTO_HIT_WINDOW_MS 内」判定；太旧音符静默跳过；回拖进度条自动重置判定。
      *  假音符（fake）只显示，不判定、不出声。 */
@@ -8442,13 +8609,7 @@ class RecordView @JvmOverloads constructor(
         if (manualPlay) {
             // 「你写我打」打方：真音符**不自动判定**，等玩家手指（见 manualTick / manualOnDown）；
             // 这里只负责让假音符按 Phira 语义飞到点就消失，否则会一直挂在屏幕上。
-            val fromMs = now - AUTO_HIT_WINDOW_MS
-            var mlo = 0
-            var mhi = order.size
-            while (mlo < mhi) {
-                val mid = (mlo + mhi) ushr 1
-                if (notes[order[mid]].startMs < fromMs) mlo = mid + 1 else mhi = mid
-            }
+            val mlo = lowerBoundStartMs(order, now - AUTO_HIT_WINDOW_MS)
             for (k in mlo until order.size) {
                 val i = order[k]
                 val n = notes[i]
@@ -8459,12 +8620,23 @@ class RecordView @JvmOverloads constructor(
             manualTick(now)
             return
         }
-        val fromMs = now - AUTO_HIT_WINDOW_MS
-        var lo = 0
-        var hi = order.size
-        while (lo < hi) {
-            val mid = (lo + hi) ushr 1
-            if (notes[order[mid]].startMs < fromMs) lo = mid + 1 else hi = mid
+        val lo = lowerBoundStartMs(order, now - AUTO_HIT_WINDOW_MS)
+        // ★ 打击音效**预响**（修"音效慢半拍"，见 [hitSoundLeadMs]）：
+        //   判定只能在帧边界发生，而且 SoundPool 出声还要过一遍输出缓冲，
+        //   所以音效按 `startMs - lead` 提前打出去；判定/特效/音符消失仍在到线那一刻。
+        //   只在这里（Autoplay）做：自己打是手指按下的一瞬间，本来就同步，提前响反而怪。
+        val lead = hitSoundLeadMs
+        if (soundEnabled && lead > 0L) {
+            for (k in lo until order.size) {
+                val i = order[k]
+                val n = notes[i]
+                if (n.startMs - lead > now) break      // 升序：后面的都还早
+                // judgedAt：从中间开播/回拖时，之前那些音符已被 seedPassedNotes 标掉，
+                // 别在这里补响一串"早已过去"的音效
+                if (n.fake || judgedAt(i) || sndDoneAt(i)) continue
+                markSndDone(i)
+                playHitSound(n.type)
+            }
         }
         for (k in lo until order.size) {
             val i = order[k]
@@ -8809,13 +8981,13 @@ class RecordView @JvmOverloads constructor(
         hitCount++
         combo++
         if (combo > maxCombo) maxCombo = combo
-        // ★ 蓝键/长条按准度分「蓝打击 / 黄打击」（Phira LIMIT_PERFECT = 80ms）：
-        //   |偏差| ≤ 80ms ⇒ PERFECT（蓝）；更早/更晚但还在窗口内 ⇒ GOOD（黄）。
-        //   黄键(4)/红键(3) 没有准度（Phira 里它们恒为 Perfect），但按用户要求
-        //   **永远出黄打击、不会蓝打击**。
+        // ★ 蓝键/长条按准度分「PERFECT / GOOD」两档（Phira `judge.rs` LIMIT_PERFECT = 80ms）：
+        //   |偏差| ≤ 80ms ⇒ PERFECT（淡黄打击），更早/更晚但仍在窗口内 ⇒ GOOD（淡蓝打击）。
+        //   黄键(4)/红键(3) **没有准度**：Phira 里它们走 PreJudge → 一律 `Judgement::Perfect`，
+        //   所以特效恒为 PERFECT 那一档（淡黄），永远不出蓝 —— 用户点名的"黄键红键不出蓝"就是这个。
         val off = Math.abs(now - n.startMs)
         val accuracyNote = n.type == 1 || n.type == 2
-        val goodFx = !accuracyNote || off > PERFECT_MS
+        val goodFx = accuracyNote && off > PERFECT_MS
         // 成绩里只有「蓝键/长条的偏差」算 GOOD；黄键/红键照 Phira 记 PERFECT
         if (accuracyNote && off > PERFECT_MS) goodCount++
         // 特效打在判定线上（音符沿线位置、线本身），避免音符过线后特效偏下
@@ -8828,9 +9000,11 @@ class RecordView @JvmOverloads constructor(
         val sinA = Math.sin(rotA).toFloat()
         val xl = ((n.posX + 1f) / 2f * width - width / 2f) * noteXFactor(l, n, now)
         spawnHitFx(lcX + xl * cosA, lcY + xl * sinA, if (goodFx) 1 else 0)
-        playHitSound(n.type)
-        // 长条：登记持续特效（直到尾部离开判定线）；音效只此一次
-        if (n.type == 2) holdFxList.add(HoldFx(i, n.endMs))
+        // 音效：Autoplay 的预响已经打过就不要再响一遍（见 hitSoundLeadMs）
+        if (!sndDoneAt(i)) { markSndDone(i); playHitSound(n.type) }
+        // 长条：登记持续特效（直到尾部离开判定线，或松手）；音效只此一次。
+        // 档位跟着头部这一下走 ⇒ 整段长条同色（用户点名）
+        if (n.type == 2) holdFxList.add(HoldFx(i, n.endMs, if (goodFx) 1 else 0))
     }
 
     /** 左上角暂停按钮上一次按下的时刻（双击防误触用） */
@@ -9023,12 +9197,7 @@ class RecordView @JvmOverloads constructor(
     fun saveDraft(): String =
         DraftCodec.encode(lines, notes, emptyList(), noiseAreas, declaredLayers, declaredNoiseLayers, videos)
 
-    /** 联机同步用：草稿 + 剪贴板一起序列化（本地草稿仍然不存剪贴板） */
-    fun draftWithClip(): String =
-        DraftCodec.encode(lines, notes, clipEntries, noiseAreas, declaredLayers, declaredNoiseLayers, videos)
-
-    /**
-     * 联机同步用：在**主线程**抓一份引用快照（只浅拷贝 List，不拼字符串），
+    /** 联机同步用：在**主线程**抓一份引用快照（只浅拷贝 List，不拼字符串），
      * 返回可以丢到后台线程调用的 encoder。
      * DraftCodec.encode 遍历的是快照，不会和主线程同时 addNote 触发并发修改；
      * 主线程省下的是真正贵的字符串生成（44 万音符每轮几十 ms）。

@@ -906,8 +906,6 @@ object Coop {
     fun greens(): List<CoopPlayer> = players.filter { it.color == COLOR_GREEN }
     /** 有人写、且至少有一个打的人 */
     fun bothFramed(): Boolean = blue() != null && greens().isNotEmpty()
-    fun bothConfirmed(): Boolean =
-        bothFramed() && blue()!!.confirmed && greens().all { it.confirmed }
 
     /** 主动离开（服务端会关掉所有连接） */
     fun leave(notify: Boolean = true) {

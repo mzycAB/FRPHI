@@ -76,6 +76,20 @@ class UndoEntry {
     /** 视频背景整份快照（新建/删除/复制/改属性都走它；条目很小，直接存副本） */
     class VideoSnap(val items: List<VideoBg>)
 
+    /**
+     * 谱面级参数快照（BPM / BPM 偏移 / 横线数 / 竖线数 / 多 BPM 分段）。
+     *
+     * 「其他」面板和 AI 都能改这几项，但改错了以前**撤不回来**（撤销栈只管音符/判定线/噪域/视频），
+     * BPM 一改整个谱面的时间网格全变，是最该能撤的一类操作 ⇒ 现在一起进撤销步。
+     */
+    class MetaSnap(
+        val bpm: Double,
+        val bpmOffsetMs: Double,
+        val hLines: Int,
+        val vLines: Int,
+        val bpmSegments: List<BpmSegment> = emptyList()
+    )
+
     val ops = ArrayList<Op>()
     private val modifiedIdx = HashSet<Int>()
 
@@ -91,6 +105,9 @@ class UndoEntry {
     /** 视频背景被改动前的整份快照 */
     var videosBefore: VideoSnap? = null
 
+    /** 谱面级参数（BPM/偏移/横线/竖线）被改动前的快照 */
+    var metaBefore: MetaSnap? = null
+
     /** 当前编辑的是哪条线（撤销后要切回它，避免指针悬空） */
     var activeLineBefore: Int = -1
 
@@ -105,10 +122,11 @@ class UndoEntry {
     var clipAfter: List<RecordView.ClipEntry>? = null
     var noiseAfter: NoiseSnap? = null
     var videosAfter: VideoSnap? = null
+    var metaAfter: MetaSnap? = null
 
     fun isEmpty(): Boolean =
         ops.isEmpty() && linesBefore == null && clipBefore == null && noiseBefore == null &&
-            videosBefore == null
+            videosBefore == null && metaBefore == null
 
     /** 这一步的线快照总共占了多少关键帧引用（撤销栈的内存预算用，见 RecordView.trimHistoryBudget） */
     fun snapRefs(): Long =
