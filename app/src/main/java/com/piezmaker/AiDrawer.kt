@@ -34,6 +34,9 @@ class AiDrawer(
     private val hooks: Hooks
 ) {
 
+    /** 快捷操作：键盘预选择框遍历的根节点 */
+    val navRoot: android.view.View get() = if (::panel.isInitialized) panel else root
+
     interface Hooks {
         /** 当前项目的音乐（空 = 没选音乐） */
         fun musicUri(): Uri
@@ -437,7 +440,7 @@ class AiDrawer(
     }
 
     private fun confirmClear() {
-        android.app.AlertDialog.Builder(act)
+        KbAlertBuilder(act)
             .setTitle("清空聊天记录")
             .setMessage("清空所有 AI 聊天记录？")
             .setPositiveButton("清空") { _, _ ->

@@ -144,6 +144,13 @@ object DraftCodec {
                     .append(e.linkGroup).append(" |").append(e.start.replace('|', '/')).append('|')
                     .append(e.end.replace('|', '/')).append('\n')
             }
+            // 颜色事件（CE lineId t0 t1 rgb0 rgb1 easing）—— 判定线颜色动画
+            for (e in l.colorEvents) {
+                sb.append("CE ").append(l.id).append(' ').append(e.startMs).append(' ').append(e.endMs).append(' ')
+                    .append(e.start).append(' ').append(e.end).append(' ').append(e.easingType).append('\n')
+            }
+            // isCover（LCV lineId 0|1）：1 = 判定线画在音符上面
+            if (l.cover) sb.append("LCV ").append(l.id).append(" 1\n")
             // incline 倾斜事件（LI lineId t0 t1 v0 v1 easing，毫秒 + 度）
             for (e in l.inclineEvents) {
                 sb.append("LI ").append(l.id).append(' ').append(e.startMs).append(' ').append(e.endMs).append(' ')
@@ -446,6 +453,24 @@ object DraftCodec {
                             head.getOrNull(5)?.toIntOrNull() ?: 0
                         )
                     )
+                }
+                // CE lineId t0 t1 rgb0 rgb1 easing —— 颜色事件
+                "CE" -> {
+                    val p = rest.split(' ')
+                    val id = p.getOrNull(0)?.toIntOrNull() ?: continue
+                    val t0 = p.getOrNull(1)?.toLongOrNull() ?: continue
+                    val t1 = p.getOrNull(2)?.toLongOrNull() ?: t0
+                    val c0 = p.getOrNull(3)?.toIntOrNull() ?: continue
+                    val c1 = p.getOrNull(4)?.toIntOrNull() ?: c0
+                    lineOf(id).colorEvents.add(
+                        ColorEvent(t0, t1, c0, c1, p.getOrNull(5)?.toIntOrNull() ?: 1)
+                    )
+                }
+                // LCV lineId 0|1 —— isCover（1 = 线画在音符上面）
+                "LCV" -> {
+                    val p = rest.split(' ')
+                    val id = p.getOrNull(0)?.toIntOrNull() ?: continue
+                    lineOf(id).cover = (p.getOrNull(1)?.toIntOrNull() ?: 0) == 1
                 }
                 // LC lineId kind x v easing —— ctrl 对象（kind 1=y 2=pos 3=size 4=alpha）
                 "LC" -> {

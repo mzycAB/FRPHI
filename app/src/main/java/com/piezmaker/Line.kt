@@ -285,6 +285,19 @@ data class TextEvent(
     val linkGroup: Int = 0
 )
 
+/**
+ * 一条 RPE 颜色事件（`extended.colorEvents`）：`[r,g,b]` → 0xRRGGBB。
+ * Phira `prpr/src/parse/rpe.rs` 把 colorEvents 解析成判定线的 `color` 动画，
+ * 谱面里带颜色的线会随时间渐变；以前 FRPHI 整段忽略，线永远是白色。
+ */
+data class ColorEvent(
+    val startMs: Long,
+    val endMs: Long,
+    val start: Int,
+    val end: Int,
+    val easingType: Int = 1
+)
+
 /** 判定线种类：RPE 里没有"类型"字段，类型由 Texture 和 textEvents 决定（和 Phiedit / Phira 一致） */
 enum class LineKind {
     /** 普通判定线：Texture = line.png，画成一条线 */
@@ -414,6 +427,36 @@ class Line(val id: Int) {
      */
     val textEvents = mutableListOf<TextEvent>()
 
+    /**
+     * 颜色事件（RPE `extended.colorEvents`）：判定线自身颜色随时间渐变。
+     * 和 textEvents 是同一类"多事件数组"，导入时必须整段保留、导出原样写回，
+     * 否则带颜色的线导进导出会变成纯白（Phira 里 `color` 是独立动画）。
+     */
+    val colorEvents = mutableListOf<ColorEvent>()
+
+    /**
+     * RPE `isCover` 的语义（Phira：`show_below = is_cover != 1`）：
+     * true = 判定线画在音符**上面**（覆盖），false = 画在音符下面（默认）。
+     * 以前导出恒定写 1、导入也不读，覆盖关系被抹平。
+     */
+    var cover: Boolean = false
+
+    /** 当前时刻的线颜色（0xRRGGBB，不带 alpha）；没有颜色事件返回 null = 用默认白 */
+    fun colorAt(ms: Long): Int? {
+        if (colorEvents.isEmpty()) return null
+        var cur: ColorEvent? = null
+        for (e in colorEvents) {
+            if (e.startMs <= ms && (cur == null || e.startMs >= cur.startMs)) cur = e
+        }
+        val e = cur ?: return colorEvents.first().start
+        if (ms >= e.endMs || e.endMs <= e.startMs) return e.end
+        val t = ((ms - e.startMs).toDouble() / (e.endMs - e.startMs).toDouble()).toFloat()
+        val r = Math.round(((e.start shr 16) and 0xFF) + t * (((e.end shr 16) and 0xFF) - ((e.start shr 16) and 0xFF)))
+        val g = Math.round(((e.start shr 8) and 0xFF) + t * (((e.end shr 8) and 0xFF) - ((e.start shr 8) and 0xFF)))
+        val b = Math.round((e.start and 0xFF) + t * ((e.end and 0xFF) - (e.start and 0xFF)))
+        return (r.coerceIn(0, 255) shl 16) or (g.coerceIn(0, 255) shl 8) or b.coerceIn(0, 255)
+    }
+
     /** textEvents 的显示区间缓存（首条开始时间, 最大结束时间）；[invalidate] 时清掉 */
     private var textSpanCache: LongArray? = null
     private var textSpanSize = -1
@@ -439,10 +482,64 @@ class Line(val id: Int) {
     var scaleX: Float = 1f
     var scaleY: Float = 1f
 
+    /**
+     * 当前时刻应显示的文字（RPE extended.textEvents 按时间取事件，语义对齐 Phira
+     * `prpr/src/core/tween.rs` 的 `impl Tweenable for String`）：
+     *  - 第一个事件开始之前：空串（Phira 的 AnimVector 默认值就是空串）
+     *  - 事件区间内：start → end 逐字补间（打字机效果）
+     *  - 事件结束后、下一事件开始前：保持上一事件的 end
+     * 没有 textEvents 时退回 [lineText]（编辑器里手动输入的单段文字）。
+     */
+    fun textAt(ms: Long): String {
+        if (textEvents.isEmpty()) return lineText
+        var cur: TextEvent? = null
+        for (e in textEvents) {
+            if (e.startMs <= ms) {
+                if (cur == null || e.startMs >= cur.startMs) cur = e
+            }
+        }
+        val e = cur ?: return ""
+        if (ms >= e.endMs) return e.end
+        if (e.endMs <= e.startMs) return e.end
+        val t = ((ms - e.startMs).toDouble() / (e.endMs - e.startMs).toDouble()).toFloat()
+        return tweenText(e.start, e.end, t)
+    }
+
+    /** RPE / Phira 的字符串补间：逐字显示、逐字回退（两边都有字且不互为前缀时保持 start） */
+    private fun tweenText(x0: String, y0: String, t: Float): String {
+        val x = if (x0.contains("%P%")) x0.replace("%P%", "") else x0
+        val y = if (y0.contains("%P%")) y0.replace("%P%", "") else y0
+        if (x.isEmpty() && y.isEmpty()) return ""
+        if (y.isEmpty()) {
+            // 反向：从 x 逐渐退成空（对应 Phira 的 `tween(y, x, 1 - t)`）
+            val n = Math.round((1f - t) * x.length).coerceIn(0, x.length)
+            return x.substring(0, n)
+        }
+        if (x.isEmpty()) {
+            val n = Math.round(t * y.length).coerceIn(0, y.length)
+            return y.substring(0, n)
+        }
+        val xLen = x.length
+        val yLen = y.length
+        return when {
+            y.startsWith(x) -> {
+                val extra = Math.floor(((yLen - xLen) * t).toDouble()).toInt().coerceIn(0, yLen - xLen)
+                x + y.substring(xLen, xLen + extra)
+            }
+            x.startsWith(y) -> {
+                val extra = Math.round(((xLen - yLen) * (1f - t)).toDouble()).toInt().coerceIn(0, xLen - yLen)
+                y + x.substring(yLen, yLen + extra)
+            }
+            else -> x
+        }
+    }
+
     val kind: LineKind
         get() = when {
             lineText.isNotEmpty() -> LineKind.Text
             texture.isNotEmpty() -> LineKind.Image
+            // 只有 textEvents、没有 lineText 的文字线（导入时首条 start 为空串的情况）
+            textEvents.any { it.start.isNotEmpty() || it.end.isNotEmpty() } -> LineKind.Text
             else -> LineKind.Normal
         }
 
@@ -752,7 +849,8 @@ class Line(val id: Int) {
         ArrayList(ctrlAlphaEvents), ArrayList(inclineEvents),
         texture, lineText, scaleX, scaleY, zOrder,
         alpha, ArrayList(textEvents),
-        textEnterFx, textExitFx, textEnterMs, textExitMs
+        textEnterFx, textExitFx, textEnterMs, textExitMs,
+        ArrayList(colorEvents), cover
     )
 
     fun restore(s: UndoEntry.LineSnap) {
@@ -784,6 +882,9 @@ class Line(val id: Int) {
         textExitFx = s.textExitFx
         textEnterMs = s.textEnterMs
         textExitMs = s.textExitMs
+        colorEvents.clear()
+        colorEvents.addAll(s.colorEvents)
+        cover = s.cover
         invalidate()
     }
 }

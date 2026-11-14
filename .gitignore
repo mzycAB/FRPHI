@@ -52,6 +52,7 @@ Thumbs.db
 
 # 日志
 *.log
+build_log*.txt
 
 # 临时目录 / 压缩包（调试参考、导出中间产物）
 .tmp/
@@ -73,3 +74,6 @@ app/release/
 *.mc
 Chart_*.json
 chart.json
+
+# 本地构建日志
+build_log.txt

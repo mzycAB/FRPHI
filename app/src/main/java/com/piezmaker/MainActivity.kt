@@ -7,6 +7,7 @@ import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -113,6 +114,18 @@ class MainActivity : Activity() {
     private lateinit var drawerPanel: LinearLayout
     private lateinit var drawerList: LinearLayout
     private var drawerOpen = false
+    /** 快捷操作「快速」态：Tab 按住开的左抽屉，松手要还原 */
+    private var qHeldDrawer = false
+    /** 抽屉键盘预选择：当前下标 + "/" 修饰 + Shift 组合键判定 */
+    private var kbDrawerIndex = -1
+    private var kbSlashHeld = false
+    private var kbSlashUsed = false
+    private var kbShiftArmed = false
+    private var kbShiftUsed = false
+    /** 主界面空白态：2 秒内连按两次 ESC 才退出应用 */
+    private var lastEscAt = 0L
+    /** 左抽屉 / 列表的白色虚线焦点框（懒加载） */
+    private var focusOverlay: KeyboardFocusOverlay? = null
     /** 主界面右滑导出的待写内容 */
     private class PendExport(
         val meta: ChartMeta,
@@ -315,7 +328,7 @@ class MainActivity : Activity() {
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT, bodyH
             ))
         }
-        val builder = AlertDialog.Builder(this)
+        val builder = KbAlertBuilder(this)
             .setTitle("FRPHI 隐私政策")
             .setView(holder)
             .setCancelable(!firstRun)
@@ -471,6 +484,7 @@ class MainActivity : Activity() {
 
     private fun openDrawer(open: Boolean) {
         if (drawerOpen == open) return
+        if (!open) { focusOverlay?.clear(); kbDrawerIndex = -1 }   // 抽屉收起：撤掉键盘焦点虚线框
         drawerOpen = open
         if (open) {
             renderProjectDrawer()
@@ -758,14 +772,22 @@ class MainActivity : Activity() {
                     swiping = false
                     canDragY = false
                     armedLong = false
-                    // 先不抢手势：竖滑交给外层 ScrollView（列表能滚）；长按到点才接管
-                    pending = Runnable {
+                    // 键盘 "/" 会把 downTime 往前拨 600ms ⇒ 长按意图立刻成立，不用真等 0.5 秒。
+                    // 手指按下时 eventTime - downTime ≈ 0，仍走原来的 500ms 计时。
+                    if (ev.eventTime - ev.downTime >= 500L) {
                         canDragY = true
                         armedLong = true
                         v.parent?.requestDisallowInterceptTouchEvent(true)
-                        v.translationZ = dp(12).toFloat()      // 抬到最上层：否则拖最上面那个时缩略图会被下面的项盖住
-                        v.animate().scaleX(1.1f).scaleY(1.1f).setDuration(90).start()
-                    }.also { v.postDelayed(it, 500) }
+                    } else {
+                        // 先不抢手势：竖滑交给外层 ScrollView（列表能滚）；长按到点才接管
+                        pending = Runnable {
+                            canDragY = true
+                            armedLong = true
+                            v.parent?.requestDisallowInterceptTouchEvent(true)
+                            v.translationZ = dp(12).toFloat()  // 抬到最上层：否则拖最上面那个时缩略图会被下面的项盖住
+                            v.animate().scaleX(1.1f).scaleY(1.1f).setDuration(90).start()
+                        }.also { v.postDelayed(it, 500) }
+                    }
                     true
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
@@ -845,7 +867,7 @@ class MainActivity : Activity() {
                             return@setOnTouchListener true
                         }
                         if (up && outL) {
-                            android.app.AlertDialog.Builder(this)
+                            KbAlertBuilder(this)
                                 .setTitle("删除项目")
                                 .setMessage("删除「" + tabs[index].name.ifEmpty { "未命名" } + "」？")
                                 .setPositiveButton("删除") { _, _ -> deleteTab(index); renderProjectDrawer() }
@@ -866,9 +888,15 @@ class MainActivity : Activity() {
                             return@setOnTouchListener true
                         }
                         when {
-                            armedLong -> {          // 长按 0.5s = 框住
-                                framedTab = if (framedTab == id) null else id
-                                renderProjectDrawer()
+                            armedLong -> {          // 键盘 "/"（或手指长按）：第一次框住
+                                if (framedTab == id) {
+                                    // 已经框住：再按一次 = 打开联机界面，不是取消框住
+                                    coopPanelMode = "host"
+                                    openRightPanel()
+                                } else {
+                                    framedTab = id
+                                    renderProjectDrawer()
+                                }
                             }
                             framedTab == id || id == boundSourceId() -> {   // 点已框住/绑定的 → 右侧抽屉（只作为服务端）
                                 coopPanelMode = "host"
@@ -1124,7 +1152,7 @@ class MainActivity : Activity() {
                         if (ev.actionMasked == android.view.MotionEvent.ACTION_UP &&
                             System.currentTimeMillis() - dragDownAt > 500
                         ) {
-                            android.app.AlertDialog.Builder(this)
+                            KbAlertBuilder(this)
                                 .setTitle("删除标签")
                                 .setMessage("删除「$label」？该项目的配置将一并清除。")
                                 .setPositiveButton("删除") { _, _ -> deleteTab(index) }
@@ -1705,7 +1733,7 @@ class MainActivity : Activity() {
             if (!isPhiraAudioExt(ext)) {
                 ui.post {
                     if (isFinishing || isDestroyed) return@post
-                    AlertDialog.Builder(this)
+                    KbAlertBuilder(this)
                         .setMessage("音频格式不受支持")
                         .setPositiveButton("确定", null)
                         .show()
@@ -1750,7 +1778,7 @@ class MainActivity : Activity() {
             setPadding(0, dp(6), 0, 0)
         }
         box.addView(extractInfo)
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("提取音轨")
             .setView(box)
             .setCancelable(false)
@@ -1988,7 +2016,7 @@ class MainActivity : Activity() {
         }
         box.addView(importInfo)
 
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("导入谱面")
             .setView(box)
             .setCancelable(false)
@@ -2178,9 +2206,12 @@ class MainActivity : Activity() {
                     }
                     zOrder = il.zOrder
                     if (il.lineText.isNotEmpty()) lineText = il.lineText
-                    // 原始文字事件（图片线常拿它当副标题）：只给"不是文字线"的线存，
-                    // 文字线导出时按 lineText 生成一条整首事件，两条都写会重复。
-                    if (texture.isNotEmpty() && il.textEvents.isNotEmpty()) {
+                    // 原始文字事件（两种线都要存）：
+                    //  · 图片线：textEvents 是"副标题"，丢了导出就没了；
+                    //  · 文字线：RPE 的一条线可以有**几十条** textEvents，按时间逐条换字——
+                    //    以前只在 texture 非空时才存，文字线（Texture=line.png ⇒ texture 为空）
+                    //    的事件全被丢掉，只剩第一句静态显示，所以"文字线只显示 2 条"。
+                    if (il.textEvents.isNotEmpty()) {
                         textEvents.addAll(
                             il.textEvents.map {
                                 TextEvent(
@@ -2196,6 +2227,8 @@ class MainActivity : Activity() {
                     // 以前只在"文字线"分支里赋值，图片线和普通线的缩放都会被丢掉（判定线粗细重置就是这个）
                     scaleX = il.scaleX
                     scaleY = il.scaleY
+                    cover = il.cover
+                    if (il.colorEvents.isNotEmpty()) colorEvents.addAll(il.colorEvents)
                     invalidate()
                 }
             }
@@ -2568,7 +2601,7 @@ class MainActivity : Activity() {
 
     /** 资源包操作弹窗（和「谱面操作」同一套原生底部按钮样式） */
     private fun showResPackDialog(name: String, pack: ResPack?, builtin: Boolean) {
-        AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("资源包操作")
             .setMessage(name)
             .setNeutralButton("取消", null)
@@ -2892,7 +2925,7 @@ class MainActivity : Activity() {
         bpmBar = bar
         bpmInfo = pct
 
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("检测 BPM")
             .setView(box)
             .setCancelable(false)
@@ -2948,7 +2981,7 @@ class MainActivity : Activity() {
     private fun showBpmResult(r: BpmDetect.Result) {
         if (isFinishing || isDestroyed) return
         // 按用户给的样式：不显示标题，正文就是三行 BPM / 首个重拍 / 置信度
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setMessage(
                 "BPM：" + r.bpmText() + "\n" +
                     "首个重拍：" + r.offsetText() + "\n" +
@@ -3323,7 +3356,7 @@ class MainActivity : Activity() {
 
     /** 清空聊天记录（带确认弹窗；正在回复时先停掉请求） */
     private fun confirmClearAiChat() {
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("清空聊天记录")
             .setMessage("清空所有 AI 聊天记录？")
             .setPositiveButton("清空") { _, _ ->
@@ -3775,7 +3808,7 @@ class MainActivity : Activity() {
     }
 
     private fun confirmDeleteEndpoint(index: Int, ep: AiEndpoint) {
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("删除接口")
             .setMessage("删除「" + ep.name + "」？")
             .setPositiveButton("删除") { _, _ ->
@@ -3792,7 +3825,7 @@ class MainActivity : Activity() {
     }
 
     private fun confirmClearOfficial(index: Int) {
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("清空接口设置")
             .setMessage("清空「DeepSeek」官方接口设置？")
             .setPositiveButton("清空") { _, _ ->
@@ -3853,7 +3886,7 @@ class MainActivity : Activity() {
             text = "模型"; textSize = 11f; setTextColor(0xFF333333.toInt())
         })
         box.addView(fModel)
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("编辑接口")
             .setView(box)
             .setPositiveButton("保存") { _, _ ->
@@ -3907,7 +3940,7 @@ class MainActivity : Activity() {
             ViewGroup.LayoutParams.MATCH_PARENT, dp(300)
         ).also { it.topMargin = dp(4) })
 
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("AI 人设 · " + ep.name)
             .setView(box)
             .setPositiveButton("保存") { _, _ ->
@@ -4060,6 +4093,41 @@ class MainActivity : Activity() {
             setOnClickListener { showPrivacyDialog(false) }
         })
 
+        rightPanelBody.addView(head("FRPHI"))
+        rightPanelBody.addView(body(
+            """
+            版本号：${appVersionText()}
+            开源协议：GNU GPL-3.0
+            Copyright © 2026 FRPHI contributors
+
+            本项目原创代码以 GNU GPL-3.0 开源，可自由使用、修改和分发；
+            分发修改后的版本时须同样以 GPL-3.0 开放源码，并保留版权与许可声明。
+
+            说明：项目中借鉴的 Phira / Re:PhiEdit / 噪域等算法思路均为独立实现，
+            不构成对上述项目的衍生作品；各上游项目自身的许可证见上文对应条目。
+            """.trimIndent()
+        ))
+        rightPanelBody.addView(body(
+            "本应用为社区工具，与 Phira、Re:PhiEdit 官方无隶属关系。" +
+                "谱面中使用的音乐、曲绘等素材版权归各自权利人所有。"
+        ))
+
+
+        rightPanelBody.addView(head("Phira Pro（Phira-Pro）"))
+        rightPanelBody.addView(body(
+            """
+            Phira Pro 是基于 Phira 的社区增强版（prpr-0.8.2-pro.18，GPL-3.0）。
+            源码：https://github.com/TeamFlos/phira（Pro 分支）
+
+            借鉴内容（仅思路，无源码搬运）：
+              · 谱面渲染 page/render/ —— ChartVideoRenderer（chart_video/session.rs）的
+                「AUTOPLAY 逐帧渲染 + 把音乐编进视频」整体流程，FRPHI「渲染铺面」按同思路
+                用 Android MediaCodec/MediaMuxer 独立实现；
+              · 渲染时间线 RenderTimeline / 状态机（Loading → Rendering → Done → Failed）
+                的分阶段进度概念。
+            同 Phira 一样，仅参考其格式语义与流程，FRPHI 以 Kotlin 独立实现，不构成衍生作品。
+            """.trimIndent()
+        ))
         rightPanelBody.addView(head("Phira"))
         rightPanelBody.addView(body(
             """
@@ -4070,8 +4138,9 @@ class MainActivity : Activity() {
             借鉴内容：RPE 谱面解析（prpr/src/parse/rpe.rs）、判定与音效映射（judge.rs）、
             判定线高度、双押提示、hit_fx 等渲染参数，以及 PEZ 谱面格式的兼容实现。
 
-            说明：本项目中参考 / 改编自 Phira 的部分按 GPL-3.0 分发。
-            许可证全文：https://www.gnu.org/licenses/gpl-3.0.html
+            说明：本项目仅参考 Phira 的谱面格式与判定语义（见上），以 Kotlin 独立实现，
+            未包含或改编其源码，不构成 GPL-3.0 衍生作品；本声明仅作致谢，不代表本项目按 GPL 分发。
+            许可证全文（Phira 自身）：https://www.gnu.org/licenses/gpl-3.0.html
             """.trimIndent()
         ))
 
@@ -4169,25 +4238,6 @@ class MainActivity : Activity() {
             本项目按其语义用 Kotlin 重写，适配到 FRPHI 的 RPE 编辑器模型
             （官谱 type 1 Tap / 2 Drag / 3 Hold / 4 Flick 映射到 FRPHI 的 1 / 4 / 2 / 3）。
             """.trimIndent()
-        ))
-
-        rightPanelBody.addView(head("FRPHI"))
-        rightPanelBody.addView(body(
-            """
-            版本号：${appVersionText()}
-            开源协议：GNU GPL-3.0
-            Copyright © 2026 FRPHI contributors
-
-            本项目原创代码以 GNU GPL-3.0 开源，可自由使用、修改和分发；
-            分发修改后的版本时须同样以 GPL-3.0 开放源码，并保留版权与许可声明。
-
-            说明：项目中参考 / 改编自 Phira 的部分同样遵循 GPL-3.0；
-            Re:PhiEdit 相关部分遵循其 MIT 许可证。
-            """.trimIndent()
-        ))
-        rightPanelBody.addView(body(
-            "本应用为社区工具，与 Phira、Re:PhiEdit 官方无隶属关系。" +
-                "谱面中使用的音乐、曲绘等素材版权归各自权利人所有。"
         ))
 
         rightPanelBody.addView(head("GNU GPL-3.0 许可证全文"))
@@ -4365,7 +4415,7 @@ class MainActivity : Activity() {
         // ★ 按钮**横着排**，排版和左滑删除那个弹窗一模一样（用户点名，之前是竖着的列表项）。
         //   原生 AlertDialog 的按钮位只有 3 个（取消/复制/导出谱面），需要「MC传谱」时
         //   往系统那排按钮里再插一个同款按钮，样式直接从原生按钮上抄。
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("谱面操作")
             .setMessage("「" + t.name.ifEmpty { "未命名" } + "」")
             .setNegativeButton("取消", null)
@@ -4594,7 +4644,7 @@ class MainActivity : Activity() {
      * 2 项：负 = options[0]，正 = options[1]；3 项：负 = options[0]，正 = options[1]，中 = options[2]。
      */
     private fun showRoomDialog(title: String, options: List<String>, onPick: (Int) -> Unit) {
-        val b = android.app.AlertDialog.Builder(this).setTitle(title)
+        val b = KbAlertBuilder(this).setTitle(title)
         when (options.size) {
             0 -> return
             1 -> b.setPositiveButton(options[0]) { _, _ -> onPick(0) }
@@ -4649,7 +4699,7 @@ class MainActivity : Activity() {
         }
         val srcId = copy.roomSource ?: return
         val src = tabs.firstOrNull { it.id == srcId } ?: return
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("保存至项目")
             .setPositiveButton("保存") { _, _ ->
                 // 内存里的房间快照才是最新的（服务端没开编辑页时，草稿文件可能是旧的）
@@ -5145,6 +5195,221 @@ class MainActivity : Activity() {
         renderPlayList()             // 从编辑页回来 / 导入谱面之后刷新选曲页列表
     }
 
+    /**
+     * 快捷操作（主界面）：Tab = 左侧抽屉，右Alt = 切换到新界面（选曲页）。
+     * Enter：选曲页 = 按下 START；抽屉有焦点 = 选中框住的项目；否则 = 进入编辑界面。
+     * 方向键：选曲页上下切换曲子；抽屉打开时上下移动白色虚线框（贴边滚动）。
+     * ESC = 返回（先收抽屉，再走系统返回）。
+     * 与编辑页共用 frphi_rec/quickOp：0 关闭（完全不接管）、1 开启、2 快速（按住开、松开关）。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val mode = try {
+            getSharedPreferences("frphi_rec", 0).getInt("quickOp", 0).coerceIn(0, 2)
+        } catch (_: Exception) { 0 }
+        val kc = event.keyCode
+        // 回车 / ESC 是主界面基础键：即使「快捷操作」三态点回了「关闭」也接管。
+        // （用户报「主界面按回车完全没变化、也没提示」= 整个分发被 mode==0 一票否决了）
+        val baseKey = KbNavUtil.isEnter(kc) || kc == KeyEvent.KEYCODE_ESCAPE
+        if (mode == 0 && !baseKey) return super.dispatchKeyEvent(event)
+        val down = event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
+        val up = event.action == KeyEvent.ACTION_UP
+        val atPlay = ::slideStage.isInitialized && slideStage.atPlayPage
+        // Shift 单独按 = 导入谱面；作为 "<" / ">" 组合键的一部分时不算
+        if (event.isShiftPressed && kc != KeyEvent.KEYCODE_SHIFT_LEFT &&
+            kc != KeyEvent.KEYCODE_SHIFT_RIGHT) kbShiftUsed = true
+        // 某些键盘发 "<"/">" 时 meta 里不带 Shift；按 keyCode 兜底，别误触发导入谱面
+        if (kc == KeyEvent.KEYCODE_COMMA || kc == KeyEvent.KEYCODE_PERIOD) kbShiftUsed = true
+
+        // ---- ESC：一次只关最上面一层，逐层往下；空白态连按 2 次才退出应用 ----
+        if (kc == KeyEvent.KEYCODE_ESCAPE) {
+            if (down) {
+                focusOverlay?.clear()
+                kbDrawerIndex = -1
+                when {
+                    atPlay -> { slideStage.animateTo(0f); lastEscAt = 0L }   // ① 选曲页 → 主界面
+                    dismissOneLevel() -> lastEscAt = 0L                        // ② 右抽屉 / 框选
+                    drawerOpen -> { openDrawer(false); lastEscAt = 0L }        // ③ 左抽屉
+                    else -> {                                                   // ④ 空白态：双击退出
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (now - lastEscAt <= 2000L) { lastEscAt = 0L; finish() }
+                        else lastEscAt = now
+                    }
+                }
+            }
+            return true
+        }
+
+        // ---- 抽屉里框住某项："<" 左滑 / ">" 右滑 / "/" 长按 / "<"+"/" 左滑 2 档 ----
+        val drawerFocus = drawerOpen && focusOverlay?.isShowing == true
+        if (drawerFocus) {
+            val swipe = KbNavUtil.swipeOf(kc)
+            val slash = kc == KeyEvent.KEYCODE_SLASH
+            if (slash) {
+                if (down) { kbSlashHeld = true; kbSlashUsed = false }
+                else if (up) {
+                    if (!kbSlashUsed) kbDrawerAct(KbAct.LONG)
+                    kbSlashHeld = false
+                }
+                return true
+            }
+            if (swipe >= 0) {
+                if (down) {
+                    val act = if (kbSlashHeld) {
+                        kbSlashUsed = true
+                        if (swipe == KbAct.SWIPE_LEFT) KbAct.SWIPE_LEFT2 else KbAct.SWIPE_RIGHT2
+                    } else swipe
+                    kbDrawerAct(act)
+                }
+                return true
+            }
+        }
+
+        // ---- Enter：新界面 START / 抽屉打开框住的项目 / 主界面开始录制 ----
+        if (KbNavUtil.isEnter(kc)) {
+            if (down) {
+                when {
+                    framedTab != null -> clearFrameSel()
+                    atPlay -> startSelectedChart()
+                    drawerFocus -> kbDrawerAct(KbAct.CLICK)
+                    else -> {
+                        // 等同点「开始录制」按钮（不直接调 startRecord，行为完全一致）
+                        val b = findViewById<View>(R.id.btnStart)
+                        if (b != null) b.performClick() else startRecord()
+                    }
+                }
+            }
+            return true
+        }
+
+        // ---- 方向键 ----
+        val dir = KbNavUtil.dirOf(kc)
+        if (dir != 0) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                if (framedTab != null) clearFrameSel()
+                when {
+                    atPlay && (dir == -1 || dir == 1) -> movePlaySelection(if (dir == 1) 1 else -1)
+                    drawerOpen -> moveDrawerFocus(kc)
+                }
+            }
+            return true
+        }
+
+        // ---- Shift = 按下「导入谱面」按钮（组合键里的 Shift 不触发）----
+        if (kc == KeyEvent.KEYCODE_SHIFT_LEFT || kc == KeyEvent.KEYCODE_SHIFT_RIGHT) {
+            if (down) { kbShiftArmed = true; kbShiftUsed = false }
+            else if (up) {
+                if (kbShiftArmed && !kbShiftUsed) {
+                    try { findViewById<View>(R.id.btnImport)?.performClick() } catch (_: Exception) {}
+                }
+                kbShiftArmed = false
+            }
+            return true
+        }
+
+        // ---- Tab：左侧抽屉（1 切换 / 2 按住开、松开关）----
+        if (kc == KeyEvent.KEYCODE_TAB) {
+            if (down) {
+                if (mode == 2) {
+                    if (!drawerOpen) { openDrawer(true); qHeldDrawer = true }
+                } else openDrawer(!drawerOpen)
+            } else if (up && mode == 2 && qHeldDrawer) {
+                openDrawer(false); qHeldDrawer = false
+            }
+            return true
+        }
+
+        // ---- 右 Alt = 点一下灰条：切页并保持，快速模式松手也**不回退** ----
+        if (kc == KeyEvent.KEYCODE_ALT_RIGHT) {
+            if (down) {
+                focusOverlay?.clear()
+                kbDrawerIndex = -1
+                clickPlayBar()
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** 右 Alt 与手指点灰条走同一个入口：只有「点一下」的切换，没有跟手拖动 */
+    private fun clickPlayBar(from: Float = if (::slideStage.isInitialized) slideStage.progress else 0f) {
+        if (!::slideStage.isInitialized) return
+        slideStage.animateTo(if (from < 0.5f) 1f else 0f)
+    }
+
+    /**
+     * 左抽屉 + 右抽屉的**全部条目合成一个集合**：方向键像「其他」菜单一样上下左右
+     * 按几何位置随便走，自然能从左边走到右边，右抽屉里的内容也就能用键盘点了。
+     */
+    private fun kbDrawerItems(): List<View> {
+        val left = if (::drawerList.isInitialized) FocusNav.itemsOf(drawerList) else emptyList()
+        val right = if (rightOpen && ::rightPanelBody.isInitialized)
+            KbNavUtil.collect(rightPanelBody) else emptyList()
+        return (left + right).distinct()
+    }
+
+    /** 条目属于哪个滚动容器，好让贴边时对应的 ScrollView 跟着滚 */
+    private fun scrollHostOf(v: View): ScrollView? {
+        var p: android.view.ViewParent? = v.parent
+        while (p != null) {
+            if (p === rightPanel) return rightPanel
+            if (::drawerScroll.isInitialized && p === drawerScroll) return drawerScroll
+            p = p.parent
+        }
+        return null
+    }
+
+    /** 取消「框住」：键盘上只有 ESC / 方向键 / 回车会用，"/" 不取消 */
+    private fun clearFrameSel() {
+        if (framedTab == null) return
+        framedTab = null
+        renderProjectDrawer()
+        focusOverlay?.clear()
+        kbDrawerIndex = -1
+    }
+
+    /** 抽屉：当前框住的项目执行单击 / 左右滑 / 长按（模拟触摸，复用原有手势） */
+    private fun kbDrawerAct(act: Int) {
+        val v = kbDrawerItems().getOrNull(kbDrawerIndex) ?: return
+        if (act == KbAct.CLICK && v is EditText) { v.requestFocus(); v.selectAll(); return }
+        KbGesture.send(v, act)
+    }
+
+    /** 焦点框懒加载：盖在 content 最上层，不拦截触摸 */
+    private fun mainFocusBox(): KeyboardFocusOverlay {
+        val old = focusOverlay
+        if (old != null) return old
+        val box = KeyboardFocusOverlay(this)
+        findViewById<ViewGroup>(android.R.id.content)?.addView(
+            box, android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        focusOverlay = box
+        return box
+    }
+
+    /** 左右抽屉合成一套：方向键按几何位置找最近的一项，贴边时对应 ScrollView 跟着滚 */
+    private fun moveDrawerFocus(kc: Int) {
+        val items = kbDrawerItems()
+        if (items.isEmpty()) return
+        val next = KbNavUtil.nearest(KbNavUtil.rects(items), kbDrawerIndex, KbNavUtil.dirOf(kc))
+        kbDrawerIndex = next
+        val v = items.getOrNull(next) ?: return
+        mainFocusBox().focus(v)
+        FocusNav.ensureVisible(v, scrollHostOf(v))
+    }
+
+    /** 新界面：上下键切列表里的曲子（沿用吸附滚动，选中项自动放大 10%） */
+    private fun movePlaySelection(delta: Int) {
+        if (!::playListScroll.isInitialized || playTabs.isEmpty()) return
+        val cur = selectedPlayIndex.coerceIn(0, playTabs.size - 1)
+        val next = (cur + delta).coerceIn(0, playTabs.size - 1)
+        // updateSelectedFromScroll(): anchor = scrollY/stride + 1, idx = anchor-1
+        // ⇒ 曲子下标恰好 = scrollY/stride，所以目标滚动位置就是 next * stride
+        playListScroll.smoothSnapTo(next * playItemStride)
+        updateSelectedFromScroll()
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         // 选曲页：旁听触摸做「长按空白 = 换背景」，不消费事件，滚动/点击都不受影响
         handlePlayBgLongPress(ev)
@@ -5515,7 +5780,7 @@ class MainActivity : Activity() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val other = if (playBarDownProgress < 0.5f) 1f else 0f
                     if (!playBarFollowDrag || playBarNonFollow) {
-                        slideStage.animateTo(other)                     // 点击 / 横滑 / 反向 ⇒ 直接触发
+                        clickPlayBar(playBarDownProgress)                // 点击 / 横滑 / 反向 ⇒ 直接触发
                     } else {
                         val p = slideStage.progress
                         val crossed = if (playBarDownProgress < 0.5f) p >= 0.6f else p <= 0.4f
@@ -5613,7 +5878,7 @@ class MainActivity : Activity() {
      */
     private fun confirmDeletePlayChart(index: Int) {
         val c = playTabs.getOrNull(index) ?: return
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("删除曲子")
             .setMessage("删除「" + c.name.ifEmpty { "未命名" } + "」？")
             .setPositiveButton("删除") { _, _ ->

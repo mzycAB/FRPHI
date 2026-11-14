@@ -948,7 +948,7 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- 「其他」二级窗口：点背景关闭；窗口以屏幕右上角为右上角 -->
+<!-- 「其他」菜单：Android 下拉通知栏式（全宽直角、顶部滑下、底部停在下遮罩上沿、4 列网格） -->
     <View
         android:id="@+id/menuScrim"
         android:layout_width="match_parent"
@@ -957,1195 +957,404 @@
         android:focusable="true"
         android:visibility="gone" />
 
-    <LinearLayout
+    <FrameLayout
         android:id="@+id/menuPanel"
-        android:layout_width="184dp"
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="top|end"
-        android:layout_marginTop="6dp"
-        android:layout_marginEnd="6dp"
-        android:background="@drawable/bg_menu_popup"
-        android:orientation="vertical"
-        android:padding="8dp"
+        android:background="@color/menu_panel_bg"
         android:visibility="gone">
 
         <ScrollView
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="match_parent"
+            android:overScrollMode="never"
             android:scrollbars="none">
 
-            <LinearLayout
+            <GridLayout
+                android:id="@+id/menuGrid"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical">
+                android:layout_marginStart="8dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginEnd="8dp"
+                android:layout_marginBottom="24dp"
+                android:background="@android:color/transparent"
+                android:columnCount="4"
+                android:padding="1dp"
+                android:useDefaultMargins="false">
 
+                <!-- ================= 编辑组 ================= -->
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="编辑"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
+                    style="@style/MenuGroupHeader"
+                    android:layout_columnSpan="4"
+                    android:layout_columnWeight="1"
+                    android:layout_gravity="fill_horizontal"
+                    android:text="编辑" />
+
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="缩放"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/scaleEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:hint="1.0"
-                            android:imeOptions="actionDone"
-                            android:inputType="numberDecimal"
-                            android:maxLength="7"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textColorHint="#99FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="倍速"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/speedEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:hint="1.0"
-                            android:imeOptions="actionDone"
-                            android:inputType="numberDecimal"
-                            android:maxLength="7"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textColorHint="#99FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-                                <!-- 谱面参数：横线数 / 竖线数 / BPM / BPM偏移（每份项目一份，重启不清空） -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="横线数"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/hLinesMenuEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:imeOptions="actionDone"
-                            android:inputType="number"
-                            android:maxLength="4"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="竖线数"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/vLinesMenuEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:imeOptions="actionDone"
-                            android:inputType="number"
-                            android:maxLength="4"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="BPM"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/bpmMenuEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:imeOptions="actionDone"
-                            android:inputType="numberDecimal"
-                            android:maxLength="7"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="BPM偏移"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/bpmOffsetMenuEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:imeOptions="actionDone"
-                            android:inputType="numberDecimal|numberSigned"
-                            android:maxLength="8"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-                <!-- 流速（用户点名：放在 BPM 下方、和 BPM 输入框一样大；可反复改，不限次数） -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="流速"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/menuSpeedEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:imeOptions="actionDone"
-                            android:inputType="numberDecimal|numberSigned"
-                            android:maxLength="8"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical" />
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="缩放" />
+                    <EditText
+                        android:id="@+id/scaleEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="1.0"
+                        android:inputType="numberDecimal"
+                        android:maxLength="7" />
                 </LinearLayout>
 
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="倍速" />
+                    <EditText
+                        android:id="@+id/speedEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="1.0"
+                        android:inputType="numberDecimal"
+                        android:maxLength="7" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="横线数" />
+                    <EditText
+                        android:id="@+id/hLinesMenuEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="4"
+                        android:inputType="number"
+                        android:maxLength="4" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="竖线数" />
+                    <EditText
+                        android:id="@+id/vLinesMenuEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="8"
+                        android:inputType="number"
+                        android:maxLength="4" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="BPM" />
+                    <EditText
+                        android:id="@+id/bpmMenuEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="120"
+                        android:inputType="numberDecimal"
+                        android:maxLength="9" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="BPM 偏移" />
+                    <EditText
+                        android:id="@+id/bpmOffsetMenuEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="0"
+                        android:inputType="numberDecimal|numberSigned"
+                        android:maxLength="9" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="流速" />
+                    <EditText
+                        android:id="@+id/menuSpeedEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="1.0"
+                        android:inputType="numberDecimal"
+                        android:maxLength="7" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="游戏延迟" />
+                    <EditText
+                        android:id="@+id/coopDelayEdit"
+                        style="@style/MenuCellInput"
+                        android:hint="0.0"
+                        android:inputType="numberDecimal"
+                        android:maxLength="5" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="帧率" />
+                    <EditText
+                        android:id="@+id/renderFpsEdit"
+                        style="@style/MenuCellInput"
+                        android:inputType="number"
+                        android:maxLength="3" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="隐藏遮罩" />
+                    <TextView
+                        android:id="@+id/btnHideBars"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="校准" />
+                    <TextView
+                        android:id="@+id/btnCalib"
+                        style="@style/MenuCellButton"
+                        android:text="校准" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="触摸兼容" />
+                    <TextView
+                        android:id="@+id/btnCompat"
+                        style="@style/MenuCellButton"
+                        android:text="关闭" />
+                </LinearLayout>
+
+                <!-- ================= 操作组 ================= -->
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="联机"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
+                    style="@style/MenuGroupHeader"
+                    android:layout_columnSpan="4"
+                    android:layout_columnWeight="1"
+                    android:layout_gravity="fill_horizontal"
+                    android:text="操作" />
+
+                <!-- 快捷操作：关闭 / 开启 / 快速（全应用通用 + 持久化，首次安装默认关闭） -->
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="游戏延迟（秒）"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <EditText
-                            android:id="@+id/coopDelayEdit"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:hint="1.0"
-                            android:imeOptions="actionDone"
-                            android:inputType="numberDecimal"
-                            android:maxLength="6"
-                            android:paddingStart="2dp"
-                            android:paddingEnd="2dp"
-                            android:selectAllOnFocus="true"
-                            android:textColor="#FFFFFF"
-                            android:textColorHint="#99FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="房间"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/txtCoopRoom"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_transparent"
-                            android:gravity="center"
-                            android:text="未联机"
-                            android:textColor="#FFFFFF"
-                            android:textSize="11sp" />
-                    </LinearLayout>
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="快捷操作" />
+                    <TextView
+                        android:id="@+id/btnQuickOp"
+                        style="@style/MenuCellButton"
+                        android:text="关闭" />
                 </LinearLayout>
 
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="平滑" />
+                    <TextView
+                        android:id="@+id/btnSmooth"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="双指缩放" />
+                    <TextView
+                        android:id="@+id/btnPinchZoom"
+                        style="@style/MenuCellButton"
+                        android:text="开" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="音效" />
+                    <TextView
+                        android:id="@+id/btnSound"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="全量模式" />
+                    <TextView
+                        android:id="@+id/btnFullMode"
+                        style="@style/MenuCellButton"
+                        android:text="关闭" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="自动移动" />
+                    <TextView
+                        android:id="@+id/btnAutoScroll"
+                        style="@style/MenuCellButton"
+                        android:text="开" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="音符列表" />
+                    <TextView
+                        android:id="@+id/btnNoteInfo"
+                        style="@style/MenuCellButton"
+                        android:text="关闭" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="快速切换" />
+                    <TextView
+                        android:id="@+id/btnQuick"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="线高亮" />
+                    <TextView
+                        android:id="@+id/btnLineHi"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <!-- ================= 判定线组 ================= -->
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="遮罩 / 校准"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
+                    style="@style/MenuGroupHeader"
+                    android:layout_columnSpan="4"
+                    android:layout_columnWeight="1"
+                    android:layout_gravity="fill_horizontal"
+                    android:text="判定线 / 制作线" />
+
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="隐藏遮罩"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnHideBars"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="校准"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnCalib"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="校准"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="判定线放置线" />
+                    <TextView
+                        android:id="@+id/btnPlaceLines"
+                        style="@style/MenuCellButton"
+                        android:text="单个" />
                 </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="制作线显示" />
+                    <TextView
+                        android:id="@+id/btnGrid"
+                        style="@style/MenuCellButton"
+                        android:text="横线" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="横向转动" />
+                    <TextView
+                        android:id="@+id/btnHRotate"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="双押贴图" />
+                    <TextView
+                        android:id="@+id/btnDoubleHint"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <!-- ================= 音符组 ================= -->
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="触摸"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
+                    style="@style/MenuGroupHeader"
+                    android:layout_columnSpan="4"
+                    android:layout_columnWeight="1"
+                    android:layout_gravity="fill_horizontal"
+                    android:text="音符" />
+
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="触摸兼容"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnCompat"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关闭"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="平滑"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnSmooth"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="反面音符" />
+                    <TextView
+                        android:id="@+id/btnReverse"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
                 </LinearLayout>
 
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="双指缩放"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnPinchZoom"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="开"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-                    </LinearLayout>
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="框住反面音符" />
+                    <TextView
+                        android:id="@+id/btnShowReverse"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
                 </LinearLayout>
 
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="音效"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnSound"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:maxLines="1"
-                            android:text="全量模式"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnFullMode"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关闭"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:maxLines="1"
-                            android:text="自动移动"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnAutoScroll"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="开"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:maxLines="1"
-                            android:text="音符列表"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnNoteInfo"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关闭"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="判定线"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="快速切换"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnQuick"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="线高亮"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnLineHi"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="判定线放置线"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnPlaceLines"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="单个"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical" />
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="制作线"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="制作线显示"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnGrid"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="横线"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="横向转动"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnHRotate"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="音符"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="双押贴图"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnDoubleHint"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical" />
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="反面音符"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="反面音符"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnReverse"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="框住反面音符"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnShowReverse"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-                </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="假音符"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="假音符"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnGhostPlace"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="显示假音符"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnGhostShow"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="显示"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="假音符" />
+                    <TextView
+                        android:id="@+id/btnGhostPlace"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
                 </LinearLayout>
 
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="框住假音符"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnGhostFrame"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical" />
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="显示假音符" />
+                    <TextView
+                        android:id="@+id/btnGhostShow"
+                        style="@style/MenuCellButton"
+                        android:text="显示" />
                 </LinearLayout>
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="9dp"
-                    android:layout_marginBottom="1dp"
-                    android:layout_marginStart="2dp"
-                    android:text="其他音符"
-                    android:textColor="#FFFFFF"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
+
                 <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="5dp"
-                    android:orientation="horizontal">
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="框住重叠音符"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnOverlapFrame"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="关"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
-
-                    <View
-                        android:layout_width="8dp"
-                        android:layout_height="1dp" />
-
-                    <LinearLayout
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:orientation="vertical">
-
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:maxLines="1"
-                            android:text="真实处理"
-                            android:textColor="#99FFFFFF"
-                            android:textSize="9sp" />
-
-                        <TextView
-                            android:id="@+id/btnRealProcess"
-                            android:layout_width="match_parent"
-                            android:layout_height="30dp"
-                            android:layout_marginTop="2dp"
-                            android:background="@drawable/bg_btn_dark"
-                            android:clickable="true"
-                            android:focusable="true"
-                            android:gravity="center"
-                            android:text="显示"
-                            android:textColor="#FFFFFF"
-                            android:textSize="12sp" />
-                    </LinearLayout>
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="框住假音符" />
+                    <TextView
+                        android:id="@+id/btnGhostFrame"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
                 </LinearLayout>
-            </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="框住重叠音符" />
+                    <TextView
+                        android:id="@+id/btnOverlapFrame"
+                        style="@style/MenuCellButton"
+                        android:text="关" />
+                </LinearLayout>
+
+                <LinearLayout
+                    style="@style/MenuCell"
+                    android:layout_columnWeight="1">
+                    <TextView style="@style/MenuCellLabel" android:text="真实处理" />
+                    <TextView
+                        android:id="@+id/btnRealProcess"
+                        style="@style/MenuCellButton"
+                        android:text="显示" />
+                </LinearLayout>
+
+            </GridLayout>
         </ScrollView>
-    </LinearLayout>
+    </FrameLayout>
 </FrameLayout>

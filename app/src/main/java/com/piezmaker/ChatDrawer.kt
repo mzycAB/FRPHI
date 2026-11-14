@@ -33,6 +33,9 @@ class ChatDrawer(
     private val root: ViewGroup,
     private val onSend: (String) -> Unit
 ) {
+
+    /** 快捷操作：键盘预选择框遍历的根节点 */
+    val navRoot: android.view.View get() = if (::panel.isInitialized) panel else root
     private lateinit var scrim: View
     private lateinit var panel: LinearLayout
     private lateinit var col: LinearLayout
@@ -309,7 +312,7 @@ class ChatDrawer(
 
     /** 只清本机：不调用 [Coop.chat]、不发任何广播，其他玩家的记录不受影响 */
     private fun confirmClear() {
-        android.app.AlertDialog.Builder(act)
+        KbAlertBuilder(act)
             .setTitle("清空聊天记录")
             .setMessage("清空本机玩家聊天记录？（不会影响其他玩家）")
             .setPositiveButton("清空") { _, _ ->

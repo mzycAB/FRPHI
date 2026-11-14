@@ -23,6 +23,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -77,6 +78,9 @@ class RecordActivity : Activity() {
     /** 从主界面「选曲页」点进来的：自动进自己打，结束后出 Phira 风格结算 */
     private var fromPlayPage = false
     private var endingOverlay: View? = null
+    /** 结算页键盘：ESC 重来、Enter 继续（指向 EndingOverlay 的两个回调） */
+    private var endingRetry: (() -> Unit)? = null
+    private var endingProceed: (() -> Unit)? = null
     /**
      * 这一局是「自己打」还是 Autoplay（进打歌时记下来）。
      * 结算「重来」要按原样重开，不能一律变成自己打。
@@ -88,6 +92,30 @@ class RecordActivity : Activity() {
     private lateinit var btnSmooth: TextView
     private lateinit var btnCompat: TextView
     private lateinit var btnPinchZoom: TextView
+    /** 「其他 → 操作 → 快捷操作」：0=关闭 1=开启 2=快速（全应用通用，frphi_rec/quickOp 持久化） */
+    private lateinit var btnQuickOp: TextView
+    private var quickOpMode: Int = 0
+    /** 快速模式：只关掉"本次按键自己打开的"窗口，用户手动开着的窗口不动 */
+    private var qHeldOther = false
+    private var qHeldPlayer = false
+    private var qHeldClip = false
+    private var qHeldLine = false
+    /** Q/E 长按期间用预览偏移累积，松手才真正 seek（和手指搓时间轴一套机制） */
+    private var qSeekPending = false
+    /** Ctrl+字母组合的 UP 也要吃掉，别漏给系统 */
+    private var qCtrlCombo = false
+    /** 键盘预选择框：作用域、当前下标、"/" 修饰键状态 */
+    private var navScopeKey = ""
+    private var kbNavIndex = -1
+    private var kbSlashHeld = false
+    private var kbSlashUsed = false
+    /** 判定线左滑：按住 "<" 期间显示两个圆圈，松手选第 1 个、按 "/" 选第 2 个 */
+    private var kbLineLeftPending = false
+    private var kbLineLeftIndex = -1
+    private var kbLineLeftDone = false
+    private var kbLineLeftCircle = 1     // 1=不带音符，2=带音符；松 "<" 时才按它执行
+    /** 「更多」菜单/抽屉的白色虚线焦点框（懒加载） */
+    private var focusOverlay: KeyboardFocusOverlay? = null
     /** 谱面参数（更多 → 编辑 分类）：BPM / BPM偏移 / 横线数 / 竖线数 */
     private lateinit var bpmMenuEdit: EditText
     private lateinit var bpmOffsetMenuEdit: EditText
@@ -180,7 +208,6 @@ class RecordActivity : Activity() {
     private var lastSyncedHash = 0
     private var lastSyncedLen = -1
     private var coopDelayEdit: EditText? = null
-    private var txtCoopRoom: TextView? = null
     private var playerListBox: LinearLayout? = null
     private var mediaPlayer: MediaPlayer? = null
     private var exportTmp: File? = null
@@ -328,10 +355,22 @@ class RecordActivity : Activity() {
         btnSmooth = findViewById(R.id.btnSmooth)
         btnCompat = findViewById(R.id.btnCompat)
         btnPinchZoom = findViewById(R.id.btnPinchZoom)
+        btnQuickOp = findViewById(R.id.btnQuickOp)
+        btnQuickOp.setOnClickListener {
+            quickOpMode = (quickOpMode + 1) % 3
+            // 立即落盘：全应用通用，重启（含杀进程）不丢；不依赖 onPause 的批量保存
+            try {
+                getSharedPreferences("frphi_rec", 0).edit()
+                    .putInt("quickOp", quickOpMode).apply()
+            } catch (_: Exception) {}
+            refreshQuickOpButton()
+        }
+        refreshQuickOpButton()
         btnDoubleHint = findViewById(R.id.btnDoubleHint)
         btnPlaceLines = findViewById(R.id.btnPlaceLines)
         txtSpeedLabel = findViewById(R.id.txtSpeedLabel)
         applyRecorderSettings()          // 「更多」里的开关：沿用上次的设置，不要每次进编辑页重置
+        if (::btnQuickOp.isInitialized) refreshQuickOpButton()   // 持久值恢复后同步三态按钮文字
         // 自动校准：把"离粗线一格"的音符吸到粗线上（可撤销）
         // 玩家列表：房间内显示玩家（设备名 + ip），左滑踢出 / 右滑框蓝绿
         btnPlayer = findViewById(R.id.btnPlayer)
@@ -344,6 +383,11 @@ class RecordActivity : Activity() {
         btnHideBars.setOnClickListener {
             recordView.hideBars = !recordView.hideBars
             refreshBarsButton()
+            // 只在用户点按钮时落盘：播放/退出打歌会临时改 hideBars，批量 save 会把临时值写进去
+            try {
+                getSharedPreferences("frphi_rec", 0).edit()
+                    .putBoolean("hideBars", recordView.hideBars).apply()
+            } catch (_: Exception) {}
         }
         // 复制 / 粘贴（长按复制 = 剪切；长按粘贴 = 剪贴板面板，下一步做）
         btnCopy = findViewById(R.id.btnCopy)
@@ -422,6 +466,10 @@ class RecordActivity : Activity() {
         btnReverse.setOnClickListener {
             recordView.reverseEnabled = !recordView.reverseEnabled
             refreshReverseButton()
+            try {
+                getSharedPreferences("frphi_rec", 0).edit()
+                    .putBoolean("reverse", recordView.reverseEnabled).apply()
+            } catch (_: Exception) {}
         }
         refreshReverseButton()
         // 显示反面音符：开启后反面音符套蓝框
@@ -529,6 +577,14 @@ class RecordActivity : Activity() {
         }
         refreshRealProcessButton()
         speedEdit = findViewById(R.id.speedEdit)
+        // 「编辑」类「倍速」「帧率」默认填白字：倍速 = 当前流速；
+        // 帧率框当前只是**占位**（渲染/全局帧率功能已删除，用户点名保留占位框）
+        speedEdit.setText(curSpeed.toString())
+        speedEdit.setTextColor(0xFFFFFFFF.toInt())
+        findViewById<EditText>(R.id.renderFpsEdit)?.let { fe ->
+            fe.setText(deviceRefreshRate().toString())
+            fe.setTextColor(0xFFFFFFFF.toInt())
+        }
         lineEditPanel = findViewById(R.id.lineEditPanel)
         linePanelGroup = findViewById(R.id.linePanelGroup)
         textAnimPanel = findViewById(R.id.textAnimPanel)
@@ -644,26 +700,27 @@ class RecordActivity : Activity() {
             e.setOnEditorActionListener { v, _, _ -> v.text.toString().toFloatOrNull()?.let(apply); v.clearFocus(); true }
             e.setOnFocusChangeListener { _, has -> if (!has) e.text.toString().toFloatOrNull()?.let(apply) }
         }
+        // ★ 谱面级参数（BPM/偏移/横线/竖线）统一走 recordView.editMeta：同步网格 + 记一步撤销
         menuNum(bpmMenuEdit, { fmtNum(meta.bpm.toFloat()) }) { v ->
+            recordView.editMeta(bpm = v.toDouble(), segments = emptyList())
             meta = meta.copy(bpm = v.toDouble(), bpmSegments = emptyList())
-            recordView.bpm = meta.bpm
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         menuNum(bpmOffsetMenuEdit, { fmtNum(meta.bpmOffsetMs.toFloat()) }) { v ->
+            recordView.editMeta(bpmOffsetMs = v.toDouble())
             meta = meta.copy(bpmOffsetMs = v.toDouble())
-            recordView.bpmOffsetMs = meta.bpmOffsetMs
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         menuNum(hLinesMenuEdit, { meta.hLines.toString() }) { v ->
             val n = v.toInt().coerceIn(1, 64)
+            recordView.editMeta(hLines = n)
             meta = meta.copy(hLines = n)
-            recordView.hLines = n
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         menuNum(vLinesMenuEdit, { meta.vLines.toString() }) { v ->
             val n = v.toInt().coerceIn(1, 64)
+            recordView.editMeta(vLines = n)
             meta = meta.copy(vLines = n)
-            recordView.vLines = n
             saveMetaToTab(); refreshInfo(); recordView.invalidate()
         }
         // 流速：写当前判定线（框住多条时一起改）+ 项目设置；每次输入都能再改，不限次数
@@ -745,6 +802,19 @@ class RecordActivity : Activity() {
             showPlayMenu()
         }
         recordView.onLinePoseChanged = { refreshLineInputs() }
+        // 撤销/重做把 BPM / 偏移 / 横线 / 竖线 还原后，写回 meta 并落盘 + 刷新「其他」输入框
+        recordView.onMetaSnapRestore = { s ->
+            meta = meta.copy(
+                bpm = s.bpm, bpmOffsetMs = s.bpmOffsetMs,
+                hLines = s.hLines, vLines = s.vLines, bpmSegments = s.bpmSegments
+            )
+            bpmMenuEdit.setText(fmtNum(s.bpm.toFloat()))
+            bpmOffsetMenuEdit.setText(fmtNum(s.bpmOffsetMs.toFloat()))
+            hLinesMenuEdit.setText(s.hLines.toString())
+            vLinesMenuEdit.setText(s.vLines.toString())
+            saveMetaToTab()
+            refreshInfo()
+        }
         speedEdit.setOnEditorActionListener { v, _, _ ->
             applySpeedFromInput()
             v.clearFocus()
@@ -758,12 +828,17 @@ class RecordActivity : Activity() {
 
         recordView.bpm = meta.bpm
         recordView.bpmOffsetMs = meta.bpmOffsetMs      // BPM 偏移：网格/吸附按它平移
+        recordView.syncMetaSegments(meta.bpmSegments)  // 撤销 BPM 改动时能连带还原分段
         recordView.hLines = meta.hLines
         recordView.vLines = meta.vLines
         recordView.linePosPct = meta.linePosPct
         recordView.pass = 1
         recordView.playheadProvider = { currentPlayhead() }
         recordView.playingProvider = { mediaPlayer?.isPlaying == true }
+        // 打击音效提前量 = 设备输出延迟 + 一帧余量（判定只能落在帧边界上，见 RecordView.hitSoundLeadMs）。
+        // 夹到 [0, 80]：蓝牙耳机这类估算不到的情况最多提前 80ms，不至于把音效甩到拍子前面。
+        recordView.hitSoundLeadMs = (audioOutputLatencyMs + 16L).coerceIn(0L, 80L)
+        DebugLog.add("audio", "hitSoundLead=${recordView.hitSoundLeadMs}ms (outputLatency=$audioOutputLatencyMs)")
         recordView.setBackgroundImage(meta.imageUri)
 
         btnPass1.setOnClickListener { if (recordView.noiseEditActive) recordView.selectNoiseCorner(0) else switchPass(1) }
@@ -1194,12 +1269,22 @@ class RecordActivity : Activity() {
         btnPinchZoom.setTextColor(if (recordView.pinchEnabled) MENU_ON else MENU_OFF)
     }
 
+    /** 「快捷操作」三态：关闭 / 开启 / 快速（按钮上只放状态，不加操作反馈小字） */
+    private fun refreshQuickOpButton() {
+        btnQuickOp.text = when (quickOpMode) { 1 -> "开启"; 2 -> "快速"; else -> "关闭" }
+        btnQuickOp.setTextColor(when (quickOpMode) {
+            1 -> MENU_ON
+            2 -> 0xFFFFEB3B.toInt()
+            else -> MENU_OFF
+        })
+    }
+
     /** 自动校准：先算会影响多少个音符，确认后再改（整批一个撤销步） */
     private fun askAutoCalibrate() {
         if (recordView.notes.isEmpty()) { toast("还没有放任何音符"); return }
         val n = recordView.countCalibratable()
         if (n == 0) { toast("没有需要校准的音符"); return }
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("自动校准")
             .setMessage("把 $n 个落在「离粗线一格」上的音符吸附到粗线？\n\n（长条只挪头部、长度不变；可以撤销）")
             .setPositiveButton("校准") { _, _ ->
@@ -1283,18 +1368,57 @@ class RecordActivity : Activity() {
 
     /** 「其他」二级窗口开关（内容分类后变长，小屏上限制高度 + 可滚动） */
     private fun showOtherMenu(show: Boolean) {
+        if (!show) focusOverlay?.clear()     // 菜单收起：撤掉键盘焦点虚线框
         menuScrim.visibility = if (show) View.VISIBLE else View.GONE
-        menuPanel.visibility = if (show) View.VISIBLE else View.GONE
-        if (show) {
-            menuPanel.post {
-                val maxH = (resources.displayMetrics.heightPixels * 0.72f).toInt()
-                if (menuPanel.height > maxH) {
-                    menuPanel.layoutParams = menuPanel.layoutParams.also { it.height = maxH }
-                }
-            }
-        } else {
+        if (!show) {
             scaleEdit.clearFocus()
             speedEdit.clearFocus()
+        }
+        if (show) {
+            // 「其他」菜单 = AI 助手抽屉的大小（右贴 458dp / 屏宽 86%）与样式
+            // （半透明黑底、直角、从上方滑入），底部仍停在下遮罩（bottomBar）上沿。
+            val dm = resources.displayMetrics
+            val panelW = minOf(dp2(458), (dm.widthPixels * 0.86f).toInt())
+            val targetH = if (this::bottomBar.isInitialized && bottomBar.visibility == View.VISIBLE) {
+                bottomBar.top
+            } else {
+                (dm.heightPixels * 0.82f).toInt()
+            }.coerceAtLeast(dp2(220))
+
+            val lp = menuPanel.layoutParams as? FrameLayout.LayoutParams
+            if (lp != null) {
+                if (lp.width != panelW) lp.width = panelW
+                if (lp.height != targetH) lp.height = targetH
+                lp.gravity = Gravity.TOP or Gravity.END      // 和 AI 抽屉一样贴右侧
+                menuPanel.layoutParams = lp
+            }
+
+            // 背景：与编辑界面遮罩同色同透明度（menu_panel_bg = #99000000），不使用模糊
+
+            menuPanel.visibility = View.VISIBLE
+            // 从顶部之上滑入
+            menuPanel.translationY = -targetH.toFloat()
+            menuPanel.animate()
+                .translationY(0f)
+                .setDuration(260L)
+                .setInterpolator(android.view.animation.DecelerateInterpolator())
+                .start()
+        } else {
+            if (menuPanel.visibility == View.VISIBLE) {
+                val h = menuPanel.height.coerceAtLeast(1)
+                menuPanel.animate()
+                    .translationY(-h.toFloat())
+                    .setDuration(200L)
+                    .setInterpolator(android.view.animation.AccelerateInterpolator())
+                    .withEndAction {
+                        menuPanel.visibility = View.GONE
+                        menuPanel.translationY = 0f
+                    }
+                    .start()
+            } else {
+                menuPanel.visibility = View.GONE
+                menuPanel.translationY = 0f
+            }
         }
     }
 
@@ -1517,32 +1641,34 @@ class RecordActivity : Activity() {
             score = score, hit = hit, good = rv.playGoodCount, total = total,
             maxCombo = maxCombo, miss = miss,
             best = best.coerceAtLeast(0), isNewBest = isNew,
-            // 右侧 9:16 长方形 = 选曲页那块（用户在选曲页换过的图优先，否则用项目的背景图）
+            // 右侧 9:16 长方形 = 主界面那块（同一张图；没选图就是灰底，任何入口都不回退成曲子背景）
             coverUri = playCoverUri(),
             // 背景 = 打歌界面那张高斯模糊图（同一张，用户点名）
             blurredBg = rv.blurredBgForEnding()
         )
         val host = findViewById<ViewGroup>(android.R.id.content)
-        endingOverlay = EndingOverlay.show(
-            this, host, summary,
-            onRetry = {
+        val retry: () -> Unit = {
+            endingOverlay = null
+            recordView.manualPlay = roundManualPlay   // 原来怎么打就怎么重开
+            if (!recordView.playMode) enterPlay()
+            restartPlay()
+        }
+        val proceed: () -> Unit = {
+            // ★ 选曲页进来的曲子：**不摘覆盖层**，直接 finish，让它随 Activity 一起消失。
+            //   先摘再 finish 会在退出动画那半秒里露出编辑界面（用户报的「点继续闪编辑界面」就是这个）。
+            if (fromPlayPage) {
                 endingOverlay = null
-                recordView.manualPlay = roundManualPlay   // 原来怎么打就怎么重开
-                if (!recordView.playMode) enterPlay()
-                restartPlay()
-            },
-            onProceed = {
-                // ★ 选曲页进来的曲子：**不摘覆盖层**，直接 finish，让它随 Activity 一起消失。
-                //   先摘再 finish 会在退出动画那半秒里露出编辑界面（用户报的「点继续闪编辑界面」就是这个）。
-                if (fromPlayPage) {
-                    endingOverlay = null
-                    finish()
-                } else {
-                    // 编辑页 / 联机进来的：摘掉覆盖层就回到编辑界面（打歌态在出结算前已经 exitPlay 过了）
-                    closeEnding()
-                    if (recordView.playMode) exitPlay()
-                }
+                finish()
+            } else {
+                // 编辑页 / 联机进来的：摘掉覆盖层就回到编辑界面（打歌态在出结算前已经 exitPlay 过了）
+                closeEnding()
+                if (recordView.playMode) exitPlay()
             }
+        }
+        endingRetry = retry
+        endingProceed = proceed
+        endingOverlay = EndingOverlay.show(
+            this, host, summary, onRetry = retry, onProceed = proceed
         )
     }
 
@@ -1555,13 +1681,22 @@ class RecordActivity : Activity() {
 
     // ---------------------------------------------------------------- 打歌暂停菜单（Phira 风格）
 
-    /** 结算右侧长方形显示什么图：选曲页选过的封面 > 项目背景图 > 没有（灰底） */
+    /**
+     * 结算右侧长方形显示什么图。
+     *
+     * ★ 用户点名的**唯一**来源：主界面/选曲页那块 9:16 长方形用的图
+     *   （`frphi_play/cover`，`restorePlayCover()` 就是它）。
+     *   不管是「选曲页 START」还是「编辑页 AUTOPLAY / PLAY」进来的，
+     *   结算都必须和主界面那块**同一张图**；没选过图就是那块灰底
+     *   （`0xFFC8CDD6`），**绝不能**回退成曲子的背景图 `meta.imageUri`
+     *   （上一轮只在选曲页入口拦住了，编辑页入口还在漏，用户点名）。
+     */
     private fun playCoverUri(): String? {
-        try {
-            val c = getSharedPreferences("frphi_play", 0).getString("cover", null)
-            if (!c.isNullOrEmpty()) return c
-        } catch (_: Exception) { }
-        return meta.imageUri.takeIf { it != Uri.EMPTY }?.toString()
+        return try {
+            getSharedPreferences("frphi_play", 0).getString("cover", null)?.takeIf { it.isNotEmpty() }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private var playMenuOverlay: ViewGroup? = null
@@ -1709,16 +1844,120 @@ class RecordActivity : Activity() {
     private fun coopWriterRunning(): Boolean =
         coopGameOn && coopRole != 0 && !recordView.manualPlay && !recordView.playMode
 
-    /** 暂停菜单：继续（原地接着打） */
+    /**
+     * 暂停菜单：继续。
+     *
+     * **本项目自己的语义（与 Phira 不同，用户点名）**：
+     *  - **不回退时间**：从暂停的那一刻继续，不往回倒；
+     *  - 点下后先等 **3 秒**，音乐保持暂停、谱面静止；
+     *  - 屏幕正中显示 **3 → 2 → 1** 的秒数倒计时；
+     *  - 这 3 秒内不能打音符（[RecordView.inputLocked] + 覆盖层吃触摸）；
+     *  - 覆盖层底色就是暂停菜单那层 `#99000000`，3 秒内**由暗渐变到全亮**。
+     * 倒计时结束才真正 `start()`，并从暂停位置接着播；连击/分数/已判定音符全部保留。
+     */
     private fun resumePlay() {
+        if (resumeCountdown != null) return        // 已经在倒计时了
+        val mp = mediaPlayer ?: return
+        val pos = try { mp.currentPosition.toLong() } catch (_: Exception) { currentPlayhead() }
+            .let { if (it > 0L) it else currentPlayhead() }
+        showResumeCountdown(pos)
+    }
+
+    private var resumeCountdown: View? = null
+    private var resumeTicker: Runnable? = null
+
+    /** 每秒步进 + 每 50ms 刷一次背景亮度的倒计时遮罩 */
+    private fun showResumeCountdown(startPos: Long) {
+        val root = findViewById<ViewGroup>(android.R.id.content) ?: return
+        val seconds = 3
+
+        val num = TextView(this).apply {
+            text = seconds.toString()
+            setTextColor(0xFFFFFFFF.toInt())
+            textSize = 55f                      // 用户点名：比上一版小一半
+            typeface = android.graphics.Typeface.DEFAULT   // 不加粗（粗细也减半）
+            includeFontPadding = false
+            gravity = Gravity.CENTER
+        }
+        val overlay = FrameLayout(this).apply {
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            // 起始色 = 暂停菜单的遮罩色（#99000000）
+            setBackgroundColor(0x99000000.toInt())
+            isClickable = true          // 吃掉所有触摸：3 秒内点不到谱面、也打不了音符
+            isFocusable = true
+            addView(
+                num,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+        root.addView(overlay)
+        resumeCountdown = overlay
+        recordView.inputLocked = true
+
+        val startAt = SystemClock.elapsedRealtime()
+        val totalMs = (seconds * 1000L).coerceAtLeast(1L)
+        var lastShown = seconds
+        val ticker = object : Runnable {
+            override fun run() {
+                if (resumeCountdown !== overlay) return
+                val elapsed = SystemClock.elapsedRealtime() - startAt
+                if (elapsed >= totalMs) {
+                    finishResumeCountdown(overlay, startPos)
+                    return
+                }
+                // 背景：#99000000 的 alpha 线性降到 0（0x99 → 0）—— 暗 → 亮
+                val k = elapsed.toFloat() / totalMs
+                val a = (0x99 * (1f - k)).toInt().coerceIn(0, 0x99)
+                overlay.setBackgroundColor(a shl 24)
+                // 剩余秒数：3 → 2 → 1
+                val remain = (seconds - elapsed / 1000L).toInt().coerceIn(1, seconds)
+                if (remain != lastShown) {
+                    lastShown = remain
+                    num.text = remain.toString()          // 直接显示，不做动画
+                }
+                overlay.postDelayed(this, 40L)      // 40ms 刷一帧，渐变看着是连续的
+            }
+        }
+        resumeTicker = ticker
+        overlay.post(ticker)
+    }
+
+    /** 倒计时结束：撤掉遮罩 → 解锁输入 → 从暂停位置开始播 */
+    private fun finishResumeCountdown(overlay: View, startPos: Long) {
+        resumeTicker?.let { overlay.removeCallbacks(it) }
+        resumeTicker = null
+        if (resumeCountdown === overlay) resumeCountdown = null
+        (overlay.parent as? ViewGroup)?.removeView(overlay)
+        recordView.inputLocked = false
         try {
-            mediaPlayer?.let { mp -> if (!mp.isPlaying) { mp.start(); applySpeed(curSpeed) } }
+            mediaPlayer?.let { mp ->
+                // 不回退：就停在暂停那一刻。seekTo 只是把位置钉死，避免期间被别的逻辑挪走
+                mp.seekTo(startPos.toInt())
+                if (!mp.isPlaying) { mp.start(); applySpeed(curSpeed) }
+            }
         } catch (e: Exception) {
             Log.e(TAG, "autoplay resume failed", e)
         }
-        // 打方点继续 → 告诉写方也继续
+        resetPlayheadAnchor()
+        updateTimeDisplay(startPos.toInt())
+        // 打方点继续 → 告诉写方也继续（倒计时结束才广播，两边节奏一致）
         if (coopGameOn && coopRole != 0 && recordView.manualPlay) Coop.resumeGame()
         recordView.invalidate()
+    }
+
+    /** 页面离开/退出时把倒计时收干净，别留一个 inputLocked 卡住界面 */
+    private fun cancelResumeCountdown() {
+        val overlay = resumeCountdown ?: return
+        resumeTicker?.let { overlay.removeCallbacks(it) }
+        resumeTicker = null
+        resumeCountdown = null
+        (overlay.parent as? ViewGroup)?.removeView(overlay)
+        recordView.inputLocked = false
     }
 
     /** 暂停菜单：重来（回到开头重打这一把，连击/分数清零） */
@@ -1770,7 +2009,6 @@ class RecordActivity : Activity() {
     /** 联机初始化：延迟输入框、房间状态、收发回调 */
     private fun setupCoop() {
         coopDelayEdit = findViewById(R.id.coopDelayEdit)
-        txtCoopRoom = findViewById(R.id.txtCoopRoom)
         // 延迟默认值：按谱面流速估一个"按键落下来得及"的时间，用户可以随便改
         if (Coop.gameDelaySec <= 0.0) {
             val sp = meta.speed.toFloat().coerceAtLeast(0.2f)
@@ -1944,11 +2182,6 @@ class RecordActivity : Activity() {
             if (coopAskWaiting) bg.setStroke(dp2(2), 0xFF00E5FF.toInt())
             btnPlayer.background = bg
         }
-        txtCoopRoom?.text = when {
-            coopRole == 0 -> "未联机"
-            coopRole == 1 -> "服务端 · ${Coop.players.size} 人"
-            else -> "客户端 · ${Coop.players.size} 人"
-        }
     }
 
     // ---------------------------------------------------------------- 「更多」开关持久化
@@ -1976,6 +2209,9 @@ class RecordActivity : Activity() {
             recordView.fullMode = p.getBoolean("fullMode", false)
             recordView.noteInfoMode = p.getBoolean("noteInfo", false)
             recordView.pinchEnabled = p.getBoolean("pinchEnabled", false)   // ★ 双指缩放：全局设置，多项目通用
+            recordView.reverseEnabled = p.getBoolean("reverse", false)      // ★ 反面：此前漏持久化
+            recordView.hideBars = p.getBoolean("hideBars", false)           // ★ 隐藏遮罩：只由按钮点击落盘
+            quickOpMode = p.getInt("quickOp", 0).coerceIn(0, 2)             // 快捷操作：首次安装默认 0=关闭
         } catch (_: Exception) {}
     }
 
@@ -2000,6 +2236,9 @@ class RecordActivity : Activity() {
                 .putInt("realProcess", recordView.realProcess)
                 .putBoolean("fullMode", recordView.fullMode)
                 .putBoolean("noteInfo", recordView.noteInfoMode)
+                .putBoolean("pinchEnabled", recordView.pinchEnabled)
+                .putBoolean("reverse", recordView.reverseEnabled)
+                .putInt("quickOp", quickOpMode)
                 .apply()
         } catch (_: Exception) {}
     }
@@ -2170,7 +2409,7 @@ class RecordActivity : Activity() {
         if (me == null || me.color == Coop.COLOR_NONE) return
         coopAskDialogOn = true
         val isBlue = me?.color == Coop.COLOR_BLUE
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("你写我打")
             .setMessage(if (isBlue) "开始一局？你写谱，其他人打。" else "房主要开一局你写我打，接受吗？")
             .setPositiveButton("接受") { _, _ ->
@@ -2303,7 +2542,7 @@ class RecordActivity : Activity() {
             isMe -> "退出"
             else -> "踢出"
         }
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle(title)
             .setMessage(msg)
             .setPositiveButton(ok) { _, _ ->
@@ -2397,10 +2636,11 @@ class RecordActivity : Activity() {
             /** 一键应用 BPM：写回当前项目（BPM + BPM 偏移），退出到主界面也是新值 */
             override fun applyBpm(bpm: Double, offsetMs: Double?) {
                 // 应用的是单 BPM：丢掉多 BPM 分段（否则导出时两套 BPM 会打架）
+                // 走 editMeta ⇒ View 立刻生效 + 记一步撤销（分段也会跟着进快照，撤销能找回）
+                recordView.editMeta(bpm = bpm, bpmOffsetMs = offsetMs, segments = emptyList())
                 meta = if (offsetMs != null)
                     meta.copy(bpm = bpm, bpmOffsetMs = round3(offsetMs), bpmSegments = emptyList())
                 else meta.copy(bpm = bpm, bpmSegments = emptyList())
-                recordView.bpm = bpm
                 saveMetaToTab()
                 refreshInfo()
                 toast("BPM 已应用：" + trimNum(meta.bpm))
@@ -2423,14 +2663,22 @@ class RecordActivity : Activity() {
                 composer?.let { m = m.copy(composer = it) }
                 charter?.let { m = m.copy(charter = it) }
                 level?.let { m = m.copy(level = it) }
+                var newBpm: Double? = null
+                var newOff: Double? = null
+                var newH: Int? = null
+                var newV: Int? = null
                 bpm?.let { v ->
                     if (v > 20.0 && v < 1000.0) {
                         // 手动/AI 指定单一 BPM：多 BPM 分段作废
                         m = m.copy(bpm = v, bpmSegments = emptyList())
-                        recordView.bpm = v
+                        newBpm = v
                     }
                 }
-                bpmOffset?.let { m = m.copy(bpmOffsetMs = round3(it.coerceIn(-60000.0, 60000.0))) }
+                bpmOffset?.let {
+                    val x = round3(it.coerceIn(-60000.0, 60000.0))
+                    m = m.copy(bpmOffsetMs = x)
+                    newOff = x
+                }
                 speed?.let {
                     // 编辑页的「流速」就是当前判定线的流速（关键帧选中时改那一帧）
                     val sp = it.coerceIn(0.05, 100.0).toFloat()
@@ -2443,8 +2691,16 @@ class RecordActivity : Activity() {
                     recordView.applyLinePosPct(p)   // 走撤销事务（撤销覆盖审计补的遗漏）
                 }
                 delay?.let { m = m.copy(delayMs = it.coerceIn(-2000, 2000)) }
-                hLines?.let { m = m.copy(hLines = it.coerceIn(1, 16)) }
-                vLines?.let { m = m.copy(vLines = it.coerceIn(1, 32)) }
+                hLines?.let { val n = it.coerceIn(1, 16); m = m.copy(hLines = n); newH = n }
+                vLines?.let { val n = it.coerceIn(1, 32); m = m.copy(vLines = n); newV = n }
+                // ★ BPM/偏移/横线/竖线必须**同步进 View**（以前只写了 meta ⇒ AI 改了横线数、BPM 偏移，
+                //   编辑网格不动，看起来像没生效）；editMeta 同时记一步撤销。
+                if (newBpm != null || newOff != null || newH != null || newV != null) {
+                    recordView.editMeta(
+                        bpm = newBpm, bpmOffsetMs = newOff, hLines = newH, vLines = newV,
+                        segments = if (newBpm != null) emptyList() else null
+                    )
+                }
                 meta = m
                 txtTitle.text = meta.name.ifEmpty { "未命名" }
                 saveMetaToTab()
@@ -2648,30 +2904,66 @@ class RecordActivity : Activity() {
     private var aiUndoSeeded = false
 
     /** 「更多」菜单里追加 AI 三个按钮（写在菜单最下面，和现有开关同一套样式） */
+    /** 设备屏幕刷新率（取整）；拿不到退回 60。帧率占位框的默认值用 */
+    private fun deviceRefreshRate(): Int {
+        return try {
+            val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
+            val rate = wm.defaultDisplay.refreshRate
+            if (rate > 0f && rate.isFinite()) Math.round(rate) else 60
+        } catch (_: Exception) { 60 }
+    }
+
     private fun addAiMenuButtons() {
-        val panel = menuPanel as? LinearLayout ?: return
-        val scroll = panel.getChildAt(0) as? ScrollView ?: return
-        val col = scroll.getChildAt(0) as? LinearLayout ?: return
-        col.addView(TextView(this).apply {
+        val grid = findViewById<android.widget.GridLayout>(R.id.menuGrid) ?: return
+        // 分组标题（横跨 4 列）
+        grid.addView(TextView(this).apply {
             text = "AI"
             setTextColor(0xFFFFFFFF.toInt())
-            textSize = 11f
+            textSize = 13f
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(dp2(2), dp2(9), dp2(2), dp2(1))
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            includeFontPadding = false
+            setPadding(dp2(10), 0, dp2(10), 0)
+            background = getDrawable(R.drawable.bg_menu_cell)
+            layoutParams = android.widget.GridLayout.LayoutParams().apply {
+                width = 0
+                height = dp2(24)
+                columnSpec = android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 4, 1f)
+                setMargins(dp2(1), dp2(1), dp2(1), dp2(1))
+            }
         })
         for ((label, mode) in listOf("自动写谱" to 0, "自动修谱" to 1, "自动缤纷" to 2)) {
-            col.addView(TextView(this).apply {
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = getDrawable(R.drawable.bg_menu_cell)
+                setPadding(dp2(8), dp2(8), dp2(8), dp2(8))
+                layoutParams = android.widget.GridLayout.LayoutParams().apply {
+                    width = 0
+                    height = ViewGroup.LayoutParams.WRAP_CONTENT
+                    columnSpec = android.widget.GridLayout.spec(android.widget.GridLayout.UNDEFINED, 1, 1f)
+                    setMargins(0, 0, 0, 0)
+                }
+            }
+            cell.addView(TextView(this).apply {
                 text = label
+                setTextColor(0xFFA8B4C4.toInt())
+                textSize = 11f
+                includeFontPadding = false
+                maxLines = 1
+            })
+            cell.addView(TextView(this).apply {
+                text = "执行"
                 gravity = android.view.Gravity.CENTER
                 setTextColor(0xFFFFFFFF.toInt())
-                textSize = 12f
+                textSize = 16f
                 includeFontPadding = false
-                background = getDrawable(R.drawable.bg_btn_dark)
+                background = getDrawable(R.drawable.bg_menu_btn)
                 layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp2(30)
-                ).also { it.topMargin = dp2(5) }
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp2(40)
+                ).also { it.topMargin = dp2(3) }
                 setOnClickListener { runAi(mode) }
             })
+            grid.addView(cell)
         }
     }
 
@@ -3601,7 +3893,7 @@ class RecordActivity : Activity() {
         box.addView(alpha)
         box.addView(label("昏暗度"))
         box.addView(dim)
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("视频")
             .setView(box)
             .setPositiveButton("确定", null)
@@ -3634,7 +3926,7 @@ class RecordActivity : Activity() {
             setSelectAllOnFocus(true)
         }
         box.addView(input)
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle(if (existing == null) "输入文字" else "修改文字")
             .setView(box)
             .setPositiveButton("确定", null)
@@ -3685,7 +3977,7 @@ class RecordActivity : Activity() {
         }
         // 做谱前先检查设备延迟：延迟太大写出来的谱根本没法打（写谱/修谱才需要）
         if (mode != 2 && meta.delayMs > 150) {
-            android.app.AlertDialog.Builder(this)
+            KbAlertBuilder(this)
                 .setTitle("延迟偏大")
                 .setMessage("当前设备延迟是 ${meta.delayMs} ms，偏大，写出来的谱可能对不上音乐。\n建议先去「校准」再回来。仍然继续吗？")
                 .setPositiveButton("继续") { _, _ -> launchAi(mode, ep, title) }
@@ -3727,7 +4019,7 @@ class RecordActivity : Activity() {
         ))
         aiMsg = msg
         aiBar = bar
-        val d = android.app.AlertDialog.Builder(this)
+        val d = KbAlertBuilder(this)
             .setTitle(title)
             .setView(box)
             .setNegativeButton("取消", null)
@@ -4213,7 +4505,7 @@ class RecordActivity : Activity() {
         }
         box.addView(exportInfo)
 
-        val dlg = android.app.AlertDialog.Builder(this)
+        val dlg = KbAlertBuilder(this)
             .setTitle("导出谱面")
             .setView(box)
             .setCancelable(false)
@@ -4426,6 +4718,383 @@ class RecordActivity : Activity() {
      * （用户报的「点里面的内容立即收起，其他窗口都正常」）。⇒ **只在栏确实可见时才拦**；
      * 栏收起时所有点击交给 RecordView 自己的 handleLineSwitcherTouch 处理，窗口外才关窗。
      */
+    /**
+     * 快捷操作（外接键盘）。「其他 → 操作 → 快捷操作」三态：
+     *   0 关闭：键盘**完全不接管**（空格暂停/开始也只在开启后才有）；
+     *   1 开启：全键位，窗口键按一下开、再按一下关；
+     *   2 快速：窗口键**按住打开、松开就关**（只关本次按键自己打开的那个窗口）。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val kc = event.keyCode
+        val down = event.action == KeyEvent.ACTION_DOWN
+        val up = event.action == KeyEvent.ACTION_UP
+        val repeat = event.repeatCount
+        val mode = try {
+            getSharedPreferences("frphi_rec", 0).getInt("quickOp", 0).coerceIn(0, 2)
+        } catch (_: Exception) { 0 }
+        if (mode == 0) return super.dispatchKeyEvent(event)
+        val typing = currentFocus is EditText
+
+        // ---- 结算界面：ESC = 重来，Enter = 继续；其它键一律不参与 ----
+        if (endingOverlay != null) {
+            if (down && repeat == 0) {
+                if (kc == KeyEvent.KEYCODE_ESCAPE) {
+                    // ★ 原「重来」按钮是在自己的点击监听里 removeView 的；
+                    //   键盘直接调回调会绕过那一步，结算层还盖着 → 看着像没重来。
+                    closeEnding()
+                    endingRetry?.invoke()
+                } else if (KbNavUtil.isEnter(kc)) endingProceed?.invoke()
+            }
+            return true
+        }
+
+        // ---- 选曲页「自己打」打歌中：ESC = 结束这一局 → Phira 结算界面
+        //      （和暂停菜单最左边「<」图标完全同一个入口；其它打歌入口 ESC 保持原行为）
+        if (kc == KeyEvent.KEYCODE_ESCAPE && down && repeat == 0 &&
+            fromPlayPage && recordView.playMode) {
+            focusOverlay?.clear()
+            if (coopGameOn && coopRole != 0) Coop.stopGame()
+            finishManualAndShowEnding()
+            return true
+        }
+
+        // ---- ESC = 返回：**一次只关最上面一层**，逐层往下，最后才走系统返回 ----
+        if (kc == KeyEvent.KEYCODE_ESCAPE) {
+            if (down && repeat == 0) {
+                focusOverlay?.clear()
+                if (kbLineLeftPending) {
+                    kbLineLeftPending = false; kbLineLeftDone = true; kbLineLeftCircle = 1
+                    recordView.keyboardPanelResetSwipe()
+                }
+                when {
+                    menuPanel.visibility == View.VISIBLE -> showOtherMenu(false)
+                    recordView.isLinePanelOpen -> recordView.closeLinePanel(keepSelection = true)
+                    recordView.isClipPanelOpen -> recordView.closeClipPanel()
+                    playerWindow != null -> closePlayerWindow(startIfReady = false)
+                    playMenuOverlay != null -> hidePlayMenu()
+                    chatDrawer?.isOpen == true -> chatDrawer?.close()
+                    ::aiDrawer.isInitialized && aiDrawer.isOpen -> aiDrawer.close()
+                    else -> onBackPressed()
+                }
+            }
+            return true
+        }
+
+        // ---- 空格：暂停 / 开始 ----
+        if (kc == KeyEvent.KEYCODE_SPACE) {
+            if (down && repeat == 0) btnPause.performClick()
+            return true
+        }
+
+        // ---- 统一键盘预选择框（白色直角虚线框）----
+        // 作用域优先级：判定线 / 剪贴板面板 > 「其他」菜单 > 玩家列表 > AI 抽屉
+        val scope = navScope()
+        if (scope != navScopeKey) {
+            navScopeKey = scope; kbNavIndex = -1; focusOverlay?.clear()
+            kbLineLeftPending = false; kbLineLeftDone = false; kbLineLeftCircle = 1
+            recordView.keyboardPanelResetSwipe()
+        }
+        if (scope.isNotEmpty()) {
+            // 按住 "<" 时做了别的操作（方向键 / 回车 / 其它）→ 圆圈状态到此为止，不执行复制
+            if (kbLineLeftPending && down && repeat == 0 &&
+                kc != KeyEvent.KEYCODE_COMMA && kc != KeyEvent.KEYCODE_SLASH) {
+                kbLineLeftPending = false
+                kbLineLeftDone = true
+                kbLineLeftCircle = 1
+                recordView.keyboardPanelResetSwipe()
+            }
+            val dir = KbNavUtil.dirOf(kc)
+            val enter = KbNavUtil.isEnter(kc)
+            val swipe = KbNavUtil.swipeOf(kc)
+            val slash = kc == KeyEvent.KEYCODE_SLASH
+            if (dir != 0) {
+                if (down) kbNavMove(dir)
+                return true
+            }
+            if (slash) {
+                if (down && repeat == 0) {
+                    if (kbLineLeftPending) {
+                        // 按住 "<" 时按 "/"：只移动到第 2 个圆圈（带音符），什么都不做
+                        kbSlashUsed = true
+                        kbLineLeftCircle = 2
+                        recordView.keyboardPanelSetCircle(true)
+                    } else { kbSlashHeld = true; kbSlashUsed = false }
+                } else if (up) {
+                    if (kbLineLeftPending) {
+                        // "<" 还按着、松开 "/" ⇒ 滑回第 1 个圆圈，仍然什么都不做
+                        kbLineLeftCircle = 1
+                        recordView.keyboardPanelSetCircle(false)
+                    } else if (!kbSlashUsed) kbNavAct(kbNavIndex, KbAct.LONG)
+                    kbSlashHeld = false
+                }
+                return true
+            }
+            if (swipe >= 0) {
+                val isLineLeft = scope == "line" && swipe == KbAct.SWIPE_LEFT
+                if (down && repeat == 0) {
+                    if (isLineLeft) {
+                        // 判定线左滑：按下只停在圆圈上，直到松开 "<" 才执行
+                        if (kbNavIndex < 0) kbNavMove(1)
+                        kbLineLeftPending = true
+                        kbLineLeftIndex = kbNavIndex
+                        kbLineLeftDone = false
+                        kbLineLeftCircle = if (kbSlashHeld) 2 else 1
+                        recordView.keyboardPanelSwipeAnim(kbNavIndex, KbAct.SWIPE_LEFT, hold = true)
+                        if (kbSlashHeld) {
+                            kbSlashUsed = true
+                            recordView.keyboardPanelSetCircle(true)
+                        }
+                    } else {
+                        val act = if (kbSlashHeld) {
+                            kbSlashUsed = true
+                            if (swipe == KbAct.SWIPE_LEFT) KbAct.SWIPE_LEFT2 else KbAct.SWIPE_RIGHT2
+                        } else swipe
+                        kbNavAct(kbNavIndex, act)
+                    }
+                } else if (up && isLineLeft && kbLineLeftPending && !kbLineLeftDone) {
+                    // 松开 "<" 才真正执行：按当前停在第几个圆圈决定带不带音符
+                    val act = if (kbLineLeftCircle == 2) KbAct.SWIPE_LEFT2 else KbAct.SWIPE_LEFT
+                    kbLineLeftAct(kbLineLeftIndex, act)
+                }
+                return true
+            }
+            if (enter) {
+                if (down && repeat == 0) {
+                    val ef = currentFocus
+                    if (ef is EditText) ef.clearFocus()   // 数值框：回车 = 确认输入
+                    else kbNavAct(kbNavIndex, KbAct.CLICK)
+                }
+                return true
+            }
+        }
+
+        // ---- 窗口键：Tab 玩家列表 / 左Shift 剪切板 / 左Alt 判定线面版 / 右Alt 其他列表 ----
+        when (kc) {
+            KeyEvent.KEYCODE_TAB, KeyEvent.KEYCODE_SHIFT_LEFT,
+            KeyEvent.KEYCODE_ALT_LEFT, KeyEvent.KEYCODE_ALT_RIGHT -> {
+                if (down && repeat == 0) {
+                    if (mode == 2) openQuickWindow(kc) else toggleQuickWindow(kc)
+                } else if (up && mode == 2) {
+                    closeQuickWindow(kc)
+                }
+                return true
+            }
+        }
+
+        // 打字时字母/数字键交还系统；顺手把长按 Q/A 残留的预览偏移落定
+        if (typing) {
+            if (qSeekPending) { recordView.flushEditSeek(); qSeekPending = false }
+            return super.dispatchKeyEvent(event)
+        }
+
+        // ---- 右Shift = AUTOPLAY ----
+        if (kc == KeyEvent.KEYCODE_SHIFT_RIGHT) {
+            if (down && repeat == 0) btnPlay.performClick()
+            return true
+        }
+
+        // ---- 1/2/3/4 = 第几次 ----
+        val passBtn = when (kc) {
+            KeyEvent.KEYCODE_1 -> btnPass1
+            KeyEvent.KEYCODE_2 -> btnPass2
+            KeyEvent.KEYCODE_3 -> btnPass3
+            KeyEvent.KEYCODE_4 -> btnPass4
+            else -> null
+        }
+        if (passBtn != null) {
+            if (down && repeat == 0) passBtn.performClick()
+            return true
+        }
+
+        // ---- Enter = PLAY（菜单外） ----
+        if (kc == KeyEvent.KEYCODE_ENTER || kc == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+            kc == KeyEvent.KEYCODE_DPAD_CENTER) {
+            if (down && repeat == 0) btnPlayManual.performClick()
+            return true
+        }
+
+        // ---- 选中音符 Ctrl+C / V / X，Ctrl+Z 撤销 ----
+        if (down && repeat == 0 && event.isCtrlPressed) {
+            when (kc) {
+                KeyEvent.KEYCODE_C -> { recordView.copySelection(); refreshInfo() }
+                KeyEvent.KEYCODE_V -> { recordView.pasteClipboard(); refreshInfo() }
+                KeyEvent.KEYCODE_X -> { recordView.cutSelection(); refreshInfo() }
+                KeyEvent.KEYCODE_Z -> { recordView.undo(); refreshInfo() }
+                else -> return super.dispatchKeyEvent(event)
+            }
+            qCtrlCombo = true
+            return true
+        }
+        if (up && qCtrlCombo && (kc == KeyEvent.KEYCODE_C || kc == KeyEvent.KEYCODE_V ||
+                kc == KeyEvent.KEYCODE_X || kc == KeyEvent.KEYCODE_Z)) {
+            qCtrlCombo = false
+            return true
+        }
+
+        // ---- W/S 缩放：单击 ±0.1，长按每 repeat ±0.02 平滑移动 ----
+        if (kc == KeyEvent.KEYCODE_W || kc == KeyEvent.KEYCODE_S) {
+            if (down) {
+                val step = if (repeat == 0) 0.1f else 0.02f
+                val d = if (kc == KeyEvent.KEYCODE_W) step else -step
+                setScale(recordView.timelineScale + d, true)
+            }
+            return true
+        }
+
+        // ---- Q/A 时间轴：单击一个横细线，长按每 repeat 1/4 格平滑，松手一次落定 ----
+        // 键位 Q/E → Q/A，方向整体反转：Q = 时间轴前进，A = 后退
+        if (kc == KeyEvent.KEYCODE_Q || kc == KeyEvent.KEYCODE_A) {
+            if (down) {
+                val g = recordView.gridStepMs()
+                val step = if (repeat == 0) g else (g / 4L).coerceAtLeast(1L)
+                recordView.addEditSeek((if (kc == KeyEvent.KEYCODE_Q) step else -step).toInt())
+                qSeekPending = true
+            } else if (up && qSeekPending) {
+                recordView.flushEditSeek()
+                qSeekPending = false
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** 当前键盘预选择的作用域（变了就重置下标，框不会串到别的窗口） */
+    private fun navScope(): String = when {
+        recordView.keyboardPanel == 1 -> "line"
+        recordView.keyboardPanel == 2 -> "clip"
+        menuPanel.visibility == View.VISIBLE -> "menu"
+        playerWindow != null -> "player"
+        ::aiDrawer.isInitialized && aiDrawer.isOpen -> "ai"
+        else -> ""
+    }
+
+    /** 该作用域里可点的 View（手绘面板没有 View，走 navRects 的矩形） */
+    private fun navViews(): List<View> = when (navScope()) {
+        "menu" -> findViewById<android.widget.GridLayout>(R.id.menuGrid)
+            ?.let { FocusNav.itemsOf(it) } ?: emptyList()
+        "player" -> KbNavUtil.collect(playerWindow)
+        "ai" -> if (::aiDrawer.isInitialized) KbNavUtil.collect(aiDrawer.navRoot) else emptyList()
+        else -> emptyList()
+    }
+
+    private fun navRects(): List<android.graphics.RectF> {
+        val sc = navScope()
+        return if (sc == "line" || sc == "clip") recordView.keyboardPanelRects()
+        else KbNavUtil.rects(navViews())
+    }
+
+    /** 方向键移动虚线框；面板贴边时把行滚进可视区 */
+    private fun kbNavMove(dir: Int) {
+        val rects = navRects()
+        if (rects.isEmpty()) return
+        val next = KbNavUtil.nearest(rects, kbNavIndex, dir)
+        kbNavIndex = next
+        val sc = navScope()
+        if (sc == "line" || sc == "clip") {
+            recordView.keyboardPanelEnsureVisible(next)
+            focusBox().focusRect(recordView.keyboardPanelRects().getOrNull(next))
+        } else {
+            val v = navViews().getOrNull(next)
+            focusBox().focus(v)
+            if (v != null) FocusNav.ensureVisible(
+                v, findViewById<android.widget.GridLayout>(R.id.menuGrid)?.parent as? ScrollView)
+        }
+    }
+
+    /** Enter / "<" / ">" / "/" 落到当前框住的项：面板走模拟触摸，View 走 KbGesture */
+    private fun kbNavAct(index: Int, act: Int) {
+        if (index < 0) { kbNavMove(1); return }   // 还没选过：先框住第一项
+        val sc = navScope()
+        if (sc == "line" || sc == "clip") {
+            recordView.keyboardPanelAct(index, act)      // 操作立即触发，不等动画
+            if (act == KbAct.SWIPE_LEFT || act == KbAct.SWIPE_LEFT2 ||
+                act == KbAct.SWIPE_RIGHT || act == KbAct.SWIPE_RIGHT2) {
+                recordView.keyboardPanelSwipeAnim(index, act)   // 并行 0.2s 视觉动画
+            }
+        } else navViews().getOrNull(index)?.let { KbGesture.send(it, act) }
+    }
+
+    /** 判定线左滑选完圆圈：执行对应复制并立刻收掉动画状态 */
+    private fun kbLineLeftAct(index: Int, act: Int) {
+        if (index >= 0) recordView.keyboardPanelAct(index, act)
+        recordView.keyboardPanelResetSwipe()
+        kbLineLeftPending = false
+        kbLineLeftDone = true
+        kbLineLeftCircle = 1
+    }
+
+    /** 焦点框懒加载：盖在 content 最上层，不拦截触摸 */
+    private fun focusBox(): KeyboardFocusOverlay {
+        val old = focusOverlay
+        if (old != null) return old
+        val box = KeyboardFocusOverlay(this)
+        findViewById<ViewGroup>(android.R.id.content)?.addView(
+            box, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        focusOverlay = box
+        return box
+    }
+
+    /** 快捷操作「开启」态：窗口键按一下开、再按一下关 */
+    private fun toggleQuickWindow(kc: Int) {
+        when (kc) {
+            KeyEvent.KEYCODE_TAB -> togglePlayerWindow()
+            KeyEvent.KEYCODE_SHIFT_LEFT ->
+                recordView.toggleClipPanelFromKeyboard(!recordView.isClipPanelOpen)
+            KeyEvent.KEYCODE_ALT_LEFT ->
+                recordView.toggleLinePanelFromKeyboard(!recordView.isLinePanelOpen)
+            KeyEvent.KEYCODE_ALT_RIGHT ->
+                showOtherMenu(menuPanel.visibility != View.VISIBLE)
+        }
+    }
+
+    /** 快捷操作「快速」态：按下打开（记下是自己开的，松手才关） */
+    private fun openQuickWindow(kc: Int) {
+        when (kc) {
+            KeyEvent.KEYCODE_TAB -> {
+                if (coopRole == 0) return          // 没开房间就没有用：静默，不弹提示
+                if (playerWindow == null) { openPlayerList(); qHeldPlayer = true }
+            }
+            KeyEvent.KEYCODE_SHIFT_LEFT ->
+                if (!recordView.isClipPanelOpen) {
+                    recordView.toggleClipPanelFromKeyboard(true); qHeldClip = true
+                }
+            KeyEvent.KEYCODE_ALT_LEFT ->
+                if (!recordView.isLinePanelOpen) {
+                    recordView.toggleLinePanelFromKeyboard(true); qHeldLine = true
+                }
+            KeyEvent.KEYCODE_ALT_RIGHT ->
+                if (menuPanel.visibility != View.VISIBLE) { showOtherMenu(true); qHeldOther = true }
+        }
+    }
+
+    /** 快捷操作「快速」态：松开关掉本次按键自己打开的窗口 */
+    private fun closeQuickWindow(kc: Int) {
+        when (kc) {
+            KeyEvent.KEYCODE_TAB -> if (qHeldPlayer) {
+                closePlayerWindow(startIfReady = false); qHeldPlayer = false
+            }
+            KeyEvent.KEYCODE_SHIFT_LEFT -> if (qHeldClip) {
+                recordView.toggleClipPanelFromKeyboard(false); qHeldClip = false
+            }
+            KeyEvent.KEYCODE_ALT_LEFT -> if (qHeldLine) {
+                recordView.toggleLinePanelFromKeyboard(false); qHeldLine = false
+            }
+            KeyEvent.KEYCODE_ALT_RIGHT -> if (qHeldOther) {
+                showOtherMenu(false); qHeldOther = false
+            }
+        }
+    }
+
+    /** 玩家列表：没开房间就没有用（静默）；已开则开/关切换 */
+    private fun togglePlayerWindow() {
+        if (playerWindow != null) { closePlayerWindow(startIfReady = false); return }
+        if (coopRole == 0) return
+        openPlayerList()
+    }
+
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         // 文字编辑双层窗口的滑动开合：只监听、不消费，输入框/按钮照常拿真实触摸
         maybeTrackPanelSwipe(ev)
@@ -4449,6 +5118,12 @@ class RecordActivity : Activity() {
 
     /** 返回键 / 顶部「退出」：问"是否保存这次改动"（导出走右上角「导出谱面」按钮） */
     override fun onBackPressed() {
+        // 继续倒计时中按返回：只取消倒计时（回到"暂停"状态），不要顺手把这一局退掉
+        if (resumeCountdown != null) {
+            cancelResumeCountdown()
+            btnPause.text = "继续"
+            return
+        }
         // 结算界面显示时，返回键 = 「继续」：选曲页进来的回主界面，其余回编辑界面
         if (endingOverlay != null) {
             // 选曲页进来的：覆盖层留着一起 finish（先摘会闪一下编辑界面）
@@ -4478,7 +5153,7 @@ class RecordActivity : Activity() {
 
     private fun askSaveAndExit() {
         if (isFinishing || isDestroyed) return
-        android.app.AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("保存这次改动？")
             .setPositiveButton("保存") { _, _ ->
                 saveDraft()
@@ -4545,6 +5220,7 @@ class RecordActivity : Activity() {
     }
 
     override fun onPause() {
+        cancelResumeCountdown()          // 倒计时期间切走：把遮罩和输入锁一起收掉
         saveRecorderSettings()                  // 「更多」里的开关落盘（下次进编辑页沿用）
         if (coopRole == 1) saveDraft()          // 服务端副本随时落盘（客户端不存任何东西）
         handler.removeCallbacksAndMessages(null)
