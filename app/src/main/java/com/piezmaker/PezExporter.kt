@@ -415,7 +415,7 @@ object PezExporter {
         // （很多图片线把 textEvents 当副标题用，只保留 lineText 会把时间和内容一起丢掉）
         val rawTextEvents = line.textEvents
         val hasText = (line.lineText.isNotEmpty() && line.kind == LineKind.Text) || rawTextEvents.isNotEmpty()
-        if (line.inclineEvents.isNotEmpty() || hasText || hasScale) {
+        if (line.inclineEvents.isNotEmpty() || hasText || hasScale || line.colorEvents.isNotEmpty()) {
             sb.append("      \"extended\": {\n")
             val parts = ArrayList<String>(3)
             if (rawTextEvents.isNotEmpty()) {
@@ -444,6 +444,22 @@ object PezExporter {
                         jstr(line.lineText) + ", \"end\": " + jstr(line.lineText) + ", \"easingType\": 0 }\n" +
                         "        ]"
                 )
+            }
+            if (line.colorEvents.isNotEmpty()) {
+                // 颜色事件（RPE extended.colorEvents）：判定线颜色动画，原样写回
+                val evb = StringBuilder()
+                evb.append("        \"colorEvents\": [\n")
+                for ((i, e) in line.colorEvents.withIndex()) {
+                    evb.append("          { \"startTime\": ").append(tS(e.startMs.toDouble()))
+                        .append(", \"endTime\": ").append(tS(e.endMs.toDouble()))
+                        .append(", \"start\": [ ").append(rgbTriple(e.start)).append(" ]")
+                        .append(", \"end\": [ ").append(rgbTriple(e.end)).append(" ]")
+                        .append(", \"easingType\": ").append(e.easingType).append(" }")
+                    if (i != line.colorEvents.lastIndex) evb.append(',')
+                    evb.append('\n')
+                }
+                evb.append("        ]")
+                parts.add(evb.toString())
             }
             if (hasScale) {
                 // scaleXEvents / scaleYEvents 是**逐事件**数组：每个关键帧的缩放管到下一个关键帧，
@@ -528,7 +544,8 @@ object PezExporter {
             sb.append("\n")
         }
         sb.append("      ],\n")
-        sb.append("      \"isCover\": 1,\n")
+        // isCover 语义（Phira：show_below = isCover != 1）：以前写死 1，导入的 0 会被抹成"线盖住音符"
+        sb.append("      \"isCover\": ").append(if (line.cover) 1 else 0).append(",\n")
         sb.append("      \"isGif\": false,\n")
         // zOrder（绘制图层序）：导入时原样读入，这里原样写回——以前写死 0，Phira 的上下图层会全丢
         sb.append("      \"zOrder\": ").append(line.zOrder).append(",\n")

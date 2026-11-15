@@ -49,4 +49,87 @@
         <item name="android:textColor">#FFFFFF</item>
         <item name="android:textSize">13sp</item>
     </style>
+
+    <!-- ==================== 「其他」下拉菜单（Android 通知栏式） ==================== -->
+
+    <!-- 分组标题：横跨 4 列 -->
+    <style name="MenuGroupHeader">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">26dp</item>
+        <item name="android:layout_columnWeight">1</item>
+        <item name="android:layout_margin">0dp</item>
+        <item name="android:background">@drawable/bg_menu_cell</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:paddingStart">10dp</item>
+        <item name="android:textColor">@color/menu_header_text</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:maxLines">1</item>
+    </style>
+
+    <!-- 网格单元：占 1/4 列宽，直角不透明底 -->
+    <style name="MenuCell">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:layout_columnWeight">1</item>
+        <item name="android:layout_margin">0dp</item>
+        <item name="android:background">@drawable/bg_menu_cell</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:padding">4dp</item>
+    </style>
+
+    <style name="MenuCellLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:textColor">@color/menu_label_text</item>
+        <item name="android:textSize">12sp</item>
+    </style>
+
+    <!-- 按钮：比原来大一倍（60dp 高 / 16sp 字），直角、不透明 -->
+    <style name="MenuCellButton" parent="@android:style/Widget.Material.Button.Borderless">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:layout_marginTop">3dp</item>
+        <item name="android:background">@drawable/bg_menu_btn</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:paddingStart">2dp</item>
+        <item name="android:paddingEnd">2dp</item>
+    </style>
+
+    <style name="MenuCellInput">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:layout_marginTop">3dp</item>
+        <item name="android:background">@drawable/bg_menu_input</item>
+        <item name="android:gravity">center</item>
+        <item name="android:imeOptions">actionDone</item>
+        <item name="android:selectAllOnFocus">true</item>
+        <item name="android:paddingStart">2dp</item>
+        <item name="android:paddingEnd">2dp</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textColorHint">@color/menu_hint_text</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:maxLines">1</item>
+    </style>
+
+    <style name="MenuCellValue">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">40dp</item>
+        <item name="android:layout_marginTop">3dp</item>
+        <item name="android:background">@drawable/bg_menu_input</item>
+        <item name="android:gravity">center</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:ellipsize">end</item>
+        <item name="android:paddingStart">2dp</item>
+        <item name="android:paddingEnd">2dp</item>
+        <item name="android:textColor">#FFFFFF</item>
+        <item name="android:textSize">16sp</item>
+    </style>
 </resources>

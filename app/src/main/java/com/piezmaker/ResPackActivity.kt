@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -716,6 +717,58 @@ class ResPackActivity : Activity() {
 
     // ★ 点窗口外 = 关窗口（用户点名修复）：窗口开着时，一旦按下落在抽屉矩形外，
     // 直接收窗并吃掉这次按下（否则会点到底下被盖住的按钮/画布上去）。
+    /** 资源包界面：白色虚线框选条目，方向键移动，Enter 单击，"< >" 左右滑，"/" 长按 */
+    private var kbBox: KeyboardFocusOverlay? = null
+    private var kbIndex = -1
+    private var kbSlashHeld = false
+    private var kbSlashUsed = false
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val mode = try {
+            getSharedPreferences("frphi_rec", 0).getInt("quickOp", 0)
+        } catch (_: Exception) { 0 }
+        if (mode <= 0) return super.dispatchKeyEvent(event)
+        val kc = event.keyCode
+        val down = event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0
+        val up = event.action == KeyEvent.ACTION_UP
+        val dir = KbNavUtil.dirOf(kc)
+        val enter = KbNavUtil.isEnter(kc)
+        val swipe = KbNavUtil.swipeOf(kc)
+        val slash = kc == KeyEvent.KEYCODE_SLASH
+        if (dir == 0 && !enter && swipe < 0 && !slash) return super.dispatchKeyEvent(event)
+        if (currentFocus is EditText) return super.dispatchKeyEvent(event)
+
+        val root = findViewById<ViewGroup>(android.R.id.content)
+        val views = KbNavUtil.collect(root)
+        if (views.isEmpty()) return true
+        val box = kbBox ?: KeyboardFocusOverlay(this).also {
+            root?.addView(it, FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+            kbBox = it
+        }
+        fun act(a: Int) {
+            if (kbIndex !in views.indices) { kbIndex = 0; box.focus(views[0]); return }
+            KbGesture.send(views[kbIndex], a)
+        }
+        when {
+            dir != 0 && down -> {
+                kbIndex = KbNavUtil.nearest(KbNavUtil.rects(views), kbIndex, dir)
+                box.focus(views.getOrNull(kbIndex))
+            }
+            enter && down -> act(KbAct.CLICK)
+            slash && down -> { kbSlashHeld = true; kbSlashUsed = false }
+            slash && up -> { if (!kbSlashUsed) act(KbAct.LONG); kbSlashHeld = false }
+            swipe >= 0 && down -> {
+                val a = if (kbSlashHeld) {
+                    kbSlashUsed = true
+                    if (swipe == KbAct.SWIPE_LEFT) KbAct.SWIPE_LEFT2 else KbAct.SWIPE_RIGHT2
+                } else swipe
+                act(a)
+            }
+        }
+        return true
+    }
+
     override fun dispatchTouchEvent(ev: android.view.MotionEvent): Boolean {
         if (ev.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
             val clip = clipDrawer
@@ -989,7 +1042,7 @@ class ResPackActivity : Activity() {
             setBackgroundColor(0xFFF2F2F2.toInt())
             setPadding(dp(8), dp(6), dp(8), dp(6))
         }
-        AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("图层名字")
             .setView(edit)
             .setPositiveButton("确定") { _, _ ->
@@ -1689,7 +1742,7 @@ class ResPackActivity : Activity() {
 
     private fun requestExit() {
         // 不论之前是否按过保存，退出都要弹窗（用户要求）
-        AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("保存这次改动？")
             .setPositiveButton("保存") { _, _ ->
                 saveAll()
@@ -1714,7 +1767,7 @@ class ResPackActivity : Activity() {
             setBackgroundColor(0xFFF2F2F2.toInt())
             setPadding(dp(8), dp(6), dp(8), dp(6))
         }
-        AlertDialog.Builder(this)
+        KbAlertBuilder(this)
             .setTitle("资源包名字")
             .setView(edit)
             .setPositiveButton("确定") { _, _ ->

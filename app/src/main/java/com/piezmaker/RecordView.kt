@@ -14,6 +14,7 @@ import android.graphics.RectF
 import android.media.AudioAttributes
 import android.media.SoundPool
 import android.net.Uri
+import android.os.Looper
 import android.os.SystemClock
 import android.util.AttributeSet
 import android.util.Log
@@ -130,8 +131,8 @@ class RecordView @JvmOverloads constructor(
         /** 手指「最近还在动」的时限：超过这个时间没动，累计行程作废（红键必须真的在划） */
         const val FLICK_MOVE_FRESH_MS = 140L
         /**
-         * Phira `judge.rs::LIMIT_PERFECT` = 0.08s：偏差在 80ms 内是 PERFECT（**蓝打击**），
-         * 之外（到判定窗口 220ms）是 GOOD（**黄打击**）。
+         * Phira `judge.rs::LIMIT_PERFECT` = 0.08s：偏差在 80ms 内是 PERFECT（淡黄打击），
+         * 之外（到判定窗口 220ms）是 GOOD（淡蓝打击）。
          */
         const val PERFECT_MS = 80L
         /** 漏判回看窗口：卡帧/掉帧时也能把刚过去的音符补判成 MISS */
@@ -163,7 +164,13 @@ class RecordView @JvmOverloads constructor(
         const val NOTE_W_RATIO = 0.13175016f
         /** Phira 谱面视口宽高比：16:9 */
         const val CHART_ASPECT = 16f / 9f
-        /** Phira 判定线长度：info.yml 的 lineLength（默认 6 = 单边 6 个半屏宽，旋转时就是贯穿屏幕的长条） */
+        /**
+         * Phira 判定线的名义长度：info.yml 的 `lineLength`（默认 6 world 单位）。
+         *
+         * ★ 只用来解释"Phira 为什么永远看不到端点"，**绘制不再乘它**（用户点名：
+         *   判定线是直线不是线段）。真正画的时候用 [halfLenCoveringViewport] 按视锥算，
+         *   恰好覆盖当前屏幕，既不会露端点，也不会画一堆屏幕外的像素。
+         */
         const val LINE_LENGTH = 6f
         /** 单一音效最多同时几条流（快速连点时掐最旧的，保证总有声音） */
         const val SND_MAX_PER_TYPE = 8
@@ -367,6 +374,16 @@ class RecordView @JvmOverloads constructor(
     var onLinesChanged: (() -> Unit)? = null
     /** 谱面/剪贴板变了（联机同步用；一次触摸 = 一次回调，因为都收在 endTx 里） */
     var onChartChanged: (() -> Unit)? = null
+    /**
+     * 撤销/重做把谱面级参数（BPM/偏移/横线/竖线/分段）还原后通知 Activity，
+     * 由它写回 `meta`、落盘并刷新输入框（见 [editMeta]）。
+     */
+    var onMetaSnapRestore: ((UndoEntry.MetaSnap) -> Unit)? = null
+    /**
+     * 多 BPM 分段的**镜像**：View 自己不解释它，只为让撤销快照能连带还原分段
+     * （`applyBpm` 改单 BPM 时会把分段清空，撤销必须能一起找回来）。
+     */
+    private var metaSegMirror: List<BpmSegment> = emptyList()
 
     /** 现在有手指按在屏幕上（联机收到远端草稿时要等松手再套用，否则音符下标会错位） */
     fun isTouchingNow(): Boolean {
@@ -383,6 +400,8 @@ class RecordView @JvmOverloads constructor(
 
     /** 是否隐藏上下遮罩（由 Activity 控制实际控件可见性） */
     var hideBars: Boolean = false
+    /** 「其他 → 操作 → 隐藏灰条」：只藏编辑页左右手柄灰条的**视觉**，触摸判定区不变 */
+    var hideSideBars: Boolean = false
         set(value) { field = value; invalidate() }
 
     /**
@@ -519,6 +538,8 @@ class RecordView @JvmOverloads constructor(
     private var rowMoveMoved = false
     private var rowMoveFrom = -1        // 按下时在第几行
     private var rowMoveTarget = -1      // 松手要插到第几行
+    /** 竖拖的判定线 id（拖动期间列表可能重建成"只有图层夹"，不能再靠按下时的行号认条目） */
+    private var rowMoveLineId = -1
     private var rowMoveStartY = 0f
     private var rowMoveDy = 0f
     private var rowMoveLastY = 0f
@@ -841,9 +862,60 @@ class RecordView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * 改**谱面级参数**（BPM / BPM 偏移 / 横线数 / 竖线数 / 多 BPM 分段），null = 不改。
+     *
+     * ★ 这是「其他」面板输入框和 AI `applyMeta` 的**唯一入口**，做两件事：
+     *   ① 立刻同步到本 View（以前 AI 改横线数/偏移只写了 meta，编辑网格不动，看起来"没生效"）；
+     *   ② 整批算**一步撤销**（以前 BPM 改错了撤不回来，而 BPM 一改整个时间网格全变）。
+     * 撤销/重做时通过 [onMetaSnapRestore] 把快照交回 Activity 写进 meta 并落盘。
+     */
+    fun editMeta(
+        bpm: Double? = null,
+        bpmOffsetMs: Double? = null,
+        hLines: Int? = null,
+        vLines: Int? = null,
+        segments: List<BpmSegment>? = null
+    ) {
+        val own = tx == null
+        if (own) beginTx()
+        if (!undoing) tx?.let { if (it.metaBefore == null) it.metaBefore = metaSnapNow() }
+        try {
+            bpm?.let { this.bpm = it }
+            bpmOffsetMs?.let { this.bpmOffsetMs = it }
+            hLines?.let { this.hLines = it.coerceIn(1, 64) }
+            vLines?.let { this.vLines = it.coerceIn(1, 64) }
+            segments?.let { metaSegMirror = it }
+        } finally {
+            if (own) endTx()
+        }
+        invalidate()
+    }
+
+    /** 谱面级参数的当前快照（BPM 分段只存引用，列表很小） */
+    private fun metaSnapNow() =
+        UndoEntry.MetaSnap(bpm, bpmOffsetMs, hLines, vLines, metaSegMirror)
+
+    /**
+     * 载入谱面时同步一次多 BPM 分段镜像（不进撤销栈）。
+     * 不同步的话"第一次改 BPM 再撤销"会把分段还原成空 —— 那就等于把分段吃掉了。
+     */
+    fun syncMetaSegments(segments: List<BpmSegment>) {
+        metaSegMirror = segments
+    }
+
+    /** 撤销/重做把谱面级参数还原（View 自己 + 回调 Activity 写回 meta） */
+    private fun applyMetaSnap(s: UndoEntry.MetaSnap) {
+        bpm = s.bpm
+        bpmOffsetMs = s.bpmOffsetMs
+        hLines = s.hLines
+        vLines = s.vLines
+        metaSegMirror = s.bpmSegments
+        onMetaSnapRestore?.invoke(s)
+    }
+
     /** 一次触摸（或一次按钮操作）= 一个撤销步 */
-    private fun beginTx(init: ((UndoEntry) -> Unit)? = null) {
-        if (!undoing && tx == null) {
+    private fun beginTx(init: ((UndoEntry) -> Unit)? = null) {        if (!undoing && tx == null) {
             tx = UndoEntry()
             init?.invoke(tx!!)
         }
@@ -955,8 +1027,7 @@ class RecordView @JvmOverloads constructor(
     }
 
     /** 改动噪域（拖角/关键帧/显示/深浅/新建/复制/删除/图层）前先整份快照 */
-    private fun noiseMutate(block: () -> Unit) {
-        if (!undoing) tx?.let {
+    private fun noiseMutate(block: () -> Unit) {        if (!undoing) tx?.let {
             if (it.noiseBefore == null) {
                 it.noiseBefore = UndoEntry.NoiseSnap(
                     ArrayList(noiseAreas),
@@ -1267,6 +1338,8 @@ class RecordView @JvmOverloads constructor(
             ArrayList(noiseOrder)
         )
         e.videosBefore = UndoEntry.VideoSnap(d.videos.map { v -> v.copy() })
+        // 旧草稿里也带剪贴板：撤销 AI 整谱替换时一起还原（applyDraft 会 loadClipEntries）
+        e.clipBefore = d.clip
         e.activeLineBefore = activeLineId
         undoStack.addLast(e)
         while (undoStack.size > UNDO_LIMIT) undoStack.removeFirst()
@@ -1289,6 +1362,8 @@ class RecordView @JvmOverloads constructor(
     private var pendingLayers: Set<Int>? = null
     private var pendingNoise: UndoEntry.NoiseSnap? = null
     private var pendingVideos: UndoEntry.VideoSnap? = null
+    /** AI 一轮改动前的剪贴板（applyDraft 会 loadClipEntries，撤销必须能还原） */
+    private var pendingClip: List<ClipEntry>? = null
     private var pendingActiveLine = -1
 
     /**
@@ -1309,6 +1384,7 @@ class RecordView @JvmOverloads constructor(
             ArrayList(noiseLayerOrder)
         )
         pendingVideos = UndoEntry.VideoSnap(videos.map { v -> v.copy() })
+        pendingClip = ArrayList(clipEntries)
         pendingActiveLine = activeLineId
     }
 
@@ -1318,6 +1394,7 @@ class RecordView @JvmOverloads constructor(
         pendingLayers = null
         pendingNoise = null
         pendingVideos = null
+        pendingClip = null
         pendingActiveLine = -1
     }
 
@@ -1334,6 +1411,8 @@ class RecordView @JvmOverloads constructor(
         e.layersBefore = pendingLayers
         e.noiseBefore = pendingNoise
         e.videosBefore = pendingVideos
+        // 整份载入会同步剪贴板（loadClipEntries），这一笔也要能退回
+        e.clipBefore = pendingClip
         e.activeLineBefore = pendingActiveLine
         clearPendingUndo()
         undoStack.addLast(e)
@@ -1393,6 +1472,7 @@ class RecordView @JvmOverloads constructor(
             ArrayList(noiseLayerOrder)
         )
         e.videosAfter = UndoEntry.VideoSnap(videos.map { v -> v.copy() })
+        e.metaAfter = metaSnapNow()
         undoing = true
         try {
             // 音符：撤追加 → 还原改写 → 按原下标插回删除的（见 UndoEntry.undoNotes）
@@ -1404,6 +1484,7 @@ class RecordView @JvmOverloads constructor(
             e.layersBefore?.let { declaredLayers.clear(); declaredLayers.addAll(it) }
             e.noiseBefore?.let { applyNoiseSnap(it) }
             e.videosBefore?.let { applyVideoSnap(it) }
+            e.metaBefore?.let { applyMetaSnap(it) }
         } finally {
             undoing = false
         }
@@ -1429,6 +1510,7 @@ class RecordView @JvmOverloads constructor(
             e.layersAfter?.let { declaredLayers.clear(); declaredLayers.addAll(it) }
             e.noiseAfter?.let { applyNoiseSnap(it) }
             e.videosAfter?.let { applyVideoSnap(it) }
+            e.metaAfter?.let { applyMetaSnap(it) }
         } finally {
             undoing = false
         }
@@ -1545,7 +1627,7 @@ class RecordView @JvmOverloads constructor(
     /** 结算界面用：这一把的最高连击 / 漏掉的音符数 */
     val playMaxCombo: Int get() = maxCombo
     val playMissCount: Int get() = missCount
-    /** 这一把里「黄打击」的数量（PERFECT 之外的命中；黄键/红键永远算黄打击） */
+    /** 这一把里 GOOD 的数量（只有蓝键/长条的偏差 > 80ms 才算；黄键/红键按 Phira 恒 PERFECT） */
     val playGoodCount: Int get() = goodCount
 
     /** 手打模式的判定窗口（比 Autoplay 的略宽一点，手指落点有误差） */
@@ -1557,10 +1639,18 @@ class RecordView @JvmOverloads constructor(
      */
     private var judgedFlags = BooleanArray(0)
     private var judgedCount = 0
+    /**
+     * 音效"已经响过"的音符下标（只给 [hitSoundLeadMs] 的**预响**用）。
+     * 和 judgedFlags 同生命周期：预响先把音效打出去并在这里记一笔，
+     * 到线时 judgeHit 看到这笔就不再重放（否则会响两下）。
+     */
+    private var sndDoneFlags = BooleanArray(0)
 
     private fun resetJudged() {
         if (judgedFlags.size != notes.size) judgedFlags = BooleanArray(notes.size)
         else java.util.Arrays.fill(judgedFlags, false)
+        if (sndDoneFlags.size != notes.size) sndDoneFlags = BooleanArray(notes.size)
+        else java.util.Arrays.fill(sndDoneFlags, false)
         judgedCount = 0
     }
 
@@ -1570,6 +1660,12 @@ class RecordView @JvmOverloads constructor(
     }
 
     private fun judgedAt(i: Int): Boolean = i >= 0 && i < judgedFlags.size && judgedFlags[i]
+
+    private fun sndDoneAt(i: Int): Boolean = i >= 0 && i < sndDoneFlags.size && sndDoneFlags[i]
+
+    private fun markSndDone(i: Int) {
+        if (i >= 0 && i < sndDoneFlags.size) sndDoneFlags[i] = true
+    }
 
     // 每条判定线自己的音符下标（画的时候只遍历自己那几个，不用把所有音符扫一遍）
     private var noteIdxVersion = 0
@@ -1767,14 +1863,19 @@ class RecordView @JvmOverloads constructor(
     private var maxCombo = 0
     private var missCount = 0
     private var hitCount = 0
-    /** 黄打击（GOOD）个数：只有蓝键/长条的「不在 80ms 内」才算；黄键/红键恒算黄打击 */
+    /** GOOD 个数：只有蓝键/长条的「偏差 > 80ms」才算；黄键/红键在 Phira 里恒为 PERFECT */
     private var goodCount = 0
     /** 自己打：这一局从哪个时间点开始（分母只算这之后的音符）+ 缓存的分母 */
     private var manualStartMs = 0L
     private var hudManualTotal = -1
     private var lastJudgeNow = 0L
-    /** 正在通过判定线的长条持续特效（头部到线 → 尾部离线的整段时间） */
-    private class HoldFx(val idx: Int, val untilMs: Long)
+    /**
+     * 正在通过判定线的长条持续特效（头部到线 → 尾部离线的整段时间）
+     * [tier] 跟着**头部那一下**的判定档走（0=PERFECT 淡黄 / 1=GOOD 淡蓝）：
+     * 用户点名「长条第一下是黄的就一直是黄的，第一下是蓝的一直是蓝的」，
+     * 以前这里没设 colorFilter，所以整段一直是白的。
+     */
+    private class HoldFx(val idx: Int, val untilMs: Long, val tier: Int)
     private val holdFxList = mutableListOf<HoldFx>()
     private val judgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
@@ -2268,7 +2369,7 @@ class RecordView @JvmOverloads constructor(
     private var bgBitmap: Bitmap? = null
     private var bgDst: RectF? = null
     /** 打歌时用的"模糊背景"（原图缩小到 1/20，再用双线性放大 → 和 Phira 一样的柔和模糊） */
-    private var bgBlurSmall: Bitmap? = null
+    @Volatile private var bgBlurSmall: Bitmap? = null
     private val gridPaint = Paint().apply { color = intColor(0x66FFFFFF); strokeWidth = 2f }
     private val linePaint = Paint().apply { color = Color.WHITE; strokeWidth = 6f }
     /** 拍号数字：垂直居中贴在粗线上，避免看起来属于相邻的细线 */
@@ -2279,12 +2380,20 @@ class RecordView @JvmOverloads constructor(
     }
     private val livePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
     private val texPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { isAntiAlias = true }
-    /** 蓝打击 / 黄打击的着色（Phira：fx_perfect 蓝、fx_good 金） */
-    private val fxBlueFilter = android.graphics.PorterDuffColorFilter(
-        0xFF4FC3F7.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
+    /**
+     * 蓝打击 / 黄打击的着色。
+     *
+     * ★ 颜色取自 Phira `prpr/src/core/resource.rs` 的 ResPackInfo 默认值（已逐字节核对）：
+     *   · `default_perfect() = 0xe1ffec9f` ⇒ ARGB(225,255,236,159) = **淡黄**
+     *   · `default_good()    = 0xebb4e1ff` ⇒ ARGB(235,180,225,255) = **淡蓝**
+     *   以前这里写反了（perfect 蓝 / good 金），所以 Autoplay（全是 PERFECT）会冒出蓝色打击，
+     *   蓝键/长条的蓝黄两档也整体颠倒（用户点名）。
+     */
+    private val fxPerfectFilter = android.graphics.PorterDuffColorFilter(
+        0xE1FFEC9F.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
     )
-    private val fxGoldFilter = android.graphics.PorterDuffColorFilter(
-        0xFFFFD54F.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
+    private val fxGoodFilter = android.graphics.PorterDuffColorFilter(
+        0xEBB4E1FF.toInt(), android.graphics.PorterDuff.Mode.SRC_IN
     )
 
     /**
@@ -2359,6 +2468,21 @@ class RecordView @JvmOverloads constructor(
     var soundEnabled: Boolean = false
         set(value) { field = value; invalidate() }
 
+    /**
+     * 打击音效**提前量**（ms，0 = 不提前）。
+     *
+     * 为什么会有"慢半拍"：判定只在**帧边界**发生，`now` 第一次超过音符时间时已经晚了
+     * 0~1 帧；SoundPool 的一下还要再穿过输出缓冲（DAC/系统混音）才真的出声。
+     * 两段叠起来就是耳朵能分出来的延迟。
+     *
+     * 所以 Autoplay 里音效在音符到线**之前** `hitSoundLeadMs` 就先响
+     * （见 [tickAutoPlay] 的预响扫），而判定/特效/音符消失仍然严格落在到线那一刻 ——
+     * 画面上不会提前消失，只有声音对齐拍子。
+     * 数值由 Activity 按设备输出延迟估（`AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER /
+     * PROPERTY_OUTPUT_SAMPLE_RATE`）再补一帧余量（[AudioLatency]）。
+     */
+    var hitSoundLeadMs: Long = 0L
+
     /** 资源包里的音效优先（ogg/wav/mp3）；没选资源包时才用内置音效。选了包但没有音效文件 → 静音 */
     private fun loadSfx(sp: SoundPool, name: String, asset: String): Int {
         val pack = resPack
@@ -2387,7 +2511,15 @@ class RecordView @JvmOverloads constructor(
                 )
                 .build()
             sp.setOnLoadCompleteListener { _, sampleId, status ->
-                if (status != 0) Log.w(TAG, "SoundPool load failed sample=$sampleId status=$status")
+                if (status != 0) {
+                    Log.w(TAG, "SoundPool load failed sample=$sampleId status=$status")
+                } else {
+                    // ★ 预热：样本一加载完就以 **0 音量**空播一次。
+                    //   SoundPool 的第一次 play 要现场分配流 + 混音通道（十几到几十毫秒），
+                    //   不预热的话第一下打击就会"迟半拍"（用户报的打击音效延迟有一部分是这个）。
+                    //   随后各音效交错打出去，后面每一下都是已分配好的流。
+                    try { sp.play(sampleId, 0f, 0f, 0, 0, 1f) } catch (_: Exception) { }
+                }
             }
             sndClick = loadSfx(sp, "click", "sounds/click.ogg")
             sndDrag = loadSfx(sp, "drag", "sounds/drag.ogg")
@@ -2441,7 +2573,7 @@ class RecordView @JvmOverloads constructor(
     }
 
     // 打击特效（Phira hit_fx 精灵图 8x7 = 56 帧）
-    /** [tier] 0 = 蓝打击（PERFECT），1 = 黄打击（GOOD；黄键/红键恒定这一档） */
+    /** [tier] 0 = PERFECT（淡黄），1 = GOOD（淡蓝）；黄键/红键按 Phira 恒为 PERFECT */
     class HitFx(val x: Float, val y: Float, val at: Long, val tier: Int = 0)
     private val hitFxList = mutableListOf<HitFx>()
     // 打击特效参数（默认 = 内置贴图 8x7 / 460ms / 0.9 倍；导入资源包后按 info.yml 覆盖）
@@ -2487,7 +2619,19 @@ class RecordView @JvmOverloads constructor(
         hitFxScale = pack?.hitFxScale ?: 0.9f
     }
 
-    /** 在 (x,y) 播一次 Phira 打击特效；[tier] 0=蓝打击（PERFECT） 1=黄打击（GOOD） */
+    /** 在 (x,y) 播一次 Phira 打击特效；[tier] 0=PERFECT（淡黄） 1=GOOD（淡蓝） */
+    /**
+     * 编辑界面**放置音符**的打击反馈（音效+特效）。
+     * 用户点名：音乐没在播（暂停/纯编辑态）时放置音符**不要**触发打击特效，
+     * 只有播放中（边放边录）放置才给反馈。点击选中、搓时间轴等"其他不变"。
+     */
+    private fun placeNoteFeedback(x: Float, y: Float, p: Int) {
+        if (playingProvider?.invoke() != true) return   // 暂停：静默放置
+        spawnHitFx(x, y)
+        ensureSounds()
+        playHitSound(p)
+    }
+
     fun spawnHitFx(x: Float, y: Float, tier: Int = 0) {
         if (hitFxList.size > 14) hitFxList.removeAt(0)
         hitFxList.add(HitFx(x, y, SystemClock.elapsedRealtime(), tier))
@@ -2535,6 +2679,24 @@ class RecordView @JvmOverloads constructor(
      *
      * 旧实现只做「缩到 1/20 再放大」（双线性 = 像素模糊），块状感明显。
      */
+    /**
+     * 进打歌前后台预生成模糊背景。以前首次以 playMode 调 onDraw 时才在**主线程**
+     * 同步做（缩放 + getPixels + 三次盒式模糊 + 建位图），背景一大就卡掉头几帧。
+     * 这里在子线程做好放进缓存，onDraw 直接命中；没来得及做完时 onDraw 仍会
+     * 同步兜底，行为不变只是不再常态化卡顿。
+     */
+    fun prepareBlurredBg() {
+        val src = bgBitmap ?: return
+        if (bgBlurSmall != null) return
+        Thread {
+            val b = try { makeBlurredBg(src) } catch (_: Exception) { null }
+            if (b != null) {
+                bgBlurSmall = b
+                postInvalidate()
+            }
+        }.start()
+    }
+
     private fun makeBlurredBg(src: Bitmap): Bitmap? {
         return try {
             val tw = (src.width / 16).coerceAtLeast(8)
@@ -2739,6 +2901,31 @@ class RecordView @JvmOverloads constructor(
         gridPaint.strokeWidth = dp(2f)
     }
 
+    /**
+     * 判定线局部坐标下"刚好铺满屏幕"的半长（= 判定线的视锥剔除）。
+     *
+     * 绘制时是 `canvas.translate(lcX, lcY)` → `canvas.rotate(-rot)`，画 `(-L,0)..(L,0)`。
+     * 于是屏幕点 (sx,sy) 在这条线的局部坐标里是：
+     *   x = (sx-lcX)·cos(a) + (sy-lcY)·sin(a)， a = -rot
+     * 取屏幕四角 |x| 的最大值就是最小够用的半长：线永远贯穿屏幕，也永远不多画。
+     * 纯算术、无分配，每帧每条线调用一次也不产生垃圾。
+     */
+    private fun halfLenCoveringViewport(lcX: Float, lcY: Float, rot: Float, w: Float, h: Float): Float {
+        val a = Math.toRadians(-rot.toDouble())
+        val ca = Math.cos(a).toFloat()
+        val sa = Math.sin(a).toFloat()
+        // 四个角：(0,0) (w,0) (0,h) (w,h) —— 逐项算，别建数组
+        val d0 = Math.abs((-lcX) * ca + (-lcY) * sa)
+        val d1 = Math.abs((w - lcX) * ca + (-lcY) * sa)
+        val d2 = Math.abs((-lcX) * ca + (h - lcY) * sa)
+        val d3 = Math.abs((w - lcX) * ca + (h - lcY) * sa)
+        var m = d0
+        if (d1 > m) m = d1
+        if (d2 > m) m = d2
+        if (d3 > m) m = d3
+        return m.coerceAtLeast(1f)
+    }
+
     // ------------------------------------------------------------ 绘制
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -2872,8 +3059,11 @@ class RecordView @JvmOverloads constructor(
             val dimmed = dimOthers && !isActive
 
             val editingThis = lineEditActive && isActive
+            // RPE extended.colorEvents：谱面自带的线颜色（以前整段忽略，带颜色的线永远变白）
+            val cAt = l.colorAt(now)
             linePaint.color = when {
                 editingThis -> intColor(0xFFFFEB3B)
+                cAt != null -> 0xFF000000.toInt() or cAt
                 isActive -> Color.WHITE
                 dimmed -> intColor(0x44FFFFFF)
                 else -> intColor(0x99FFFFFF)
@@ -2890,16 +3080,21 @@ class RecordView @JvmOverloads constructor(
             // 判定线透明度（RPE alphaEvents）：0 时整条隐藏；负数 = Phira 的"连音符一起隐藏"（PE alpha extension）
             val lineA = l.alphaAt(now)
             val lineHiddenByNegAlpha = playMode && lineA < 0f
-            linePaint.alpha = (linePaint.alpha * lineA.coerceIn(0f, 1f)).toInt().coerceIn(0, 255)
+            // isCover（Phira：show_below = isCover != 1）：线盖在音符上面 ⇒ 先把这条线的音符画掉
+            val coverLine = l.cover && !lineHiddenByNegAlpha
+            if (coverLine) drawNotesOfLine(canvas, l, now, noteW, lcX, lcY, rot, dhAll, dimmed)
+            val dimMul = if (dimmed && cAt != null) 0.27f else 1f
+            linePaint.alpha = (linePaint.alpha * lineA.coerceIn(0f, 1f) * dimMul).toInt().coerceIn(0, 255)
             canvas.save()
             canvas.translate(lcX, lcY)
             canvas.rotate(-rot)
-            // 判定线长度按 Phira：line_length = 6 是 **world 单位**（不是"半屏宽个数"），
-            // 屏幕半宽 = aspect world，所以单边 = line_length × w / (2 × aspect)；
-            // 且普通 line.png 线在 rpe.rs 解析时 scaleX 会再乘 0.5（无 text/paint/attachUI 时）。
-            // 综合下来默认单边 ≈ 0.84 屏宽（原来错算成 3 屏宽，长了 3.5 倍）。
-            val lineScaleX = lScaleX.coerceIn(0.02f, 20f)
-            val lineHalfLen = w * LINE_LENGTH / (2f * CHART_ASPECT) * 0.5f * lineScaleX
+            // ★ 判定线是**无限直线**，不是线段（用户点名，已对着 phira / phiedit 源码核实）：
+            //   · phira  `prpr/src/core/line.rs`: `draw_line(-len, 0., len, 0., ...)`，len = lineLength(6)。
+            //   · phiedit `renderer.js`: `line_length = 2000 * scaleX`，端点全部在屏幕外。
+            //   两边的"长度"只是**把端点推出视口**的手段，没有端点语义（缩放再小也不该看见线头）。
+            //   所以这里按视锥算：把屏幕四角反变换到线的局部坐标，取 |x| 的最大值，
+            //   正好铺满当前视口 —— 永不露端点，也不多画一个屏幕外的像素（视锥剔除）。
+            val lineHalfLen = halfLenCoveringViewport(lcX, lcY, rot, w, h) + linePaint.strokeWidth
             if (lineA > 0.004f) {
                 when (l.kind) {
                     // 图片线：按 RPE 语义画（1 像素 = 1 单位，缩放乘在尺寸上），原点在线中心
@@ -2932,7 +3127,8 @@ class RecordView @JvmOverloads constructor(
                             if (Math.abs(lScaleY) > 1e-5f) (lScaleX / lScaleY).coerceIn(0.05f, 20f) else 1f
                         beatNumPaint.textAlign = Paint.Align.CENTER
                         beatNumPaint.style = Paint.Style.FILL
-                        beatNumPaint.color = intColor(0xFFFFFFFF)
+                        val tCol = l.colorAt(now)
+                        beatNumPaint.color = if (tCol != null) (0xFF000000.toInt() or tCol) else intColor(0xFFFFFFFF)
                         val dimF = if (dimmed) DIM_ALPHA else 1f
                         beatNumPaint.alpha = (255 * lineA.coerceIn(0f, 1f) * dimF).toInt().coerceIn(0, 255)
                         val fm = beatNumPaint.fontMetrics
@@ -2943,6 +3139,10 @@ class RecordView @JvmOverloads constructor(
                         // ★ 渲染兜底：动画这段出任何异常都不能让整帧（进而整个编辑页）崩，
                         //   退回原来的整段文字绘制，并把异常记进日志。
                         var fxShown: Int? = null
+                        // ★ 文字线的一条判定线可以挂几十条 textEvents（RPE 按时间换字）。
+                        //   以前只会画 lineText（第一条），所以导入后整首只显示一句话；
+                        //   现在取"当前时刻该显示的那一条"，逐字补间语义与 Phira 一致。
+                        val txt = l.textAt(now)
                         try {
                             val span = l.textEventSpan()
                             val t0 = span?.get(0) ?: 0L
@@ -2950,12 +3150,12 @@ class RecordView @JvmOverloads constructor(
                                 ?: (trackLengthMs.takeIf { it > 0L } ?: 60_000L)
                             val shown = TextFx.state(
                                 l.textEnterFx, l.textExitFx, l.textEnterMs, l.textExitMs,
-                                now, t0, t1, l.lineText.length, textFxOut
+                                now, t0, t1, txt.length, textFxOut
                             )
                             fxShown = shown
                             if (shown > 0 && textFxOut[0] > 0f) {
                                 beatNumPaint.alpha = (baseA * textFxOut[0]).toInt().coerceIn(0, 255)
-                                canvas.drawText(l.lineText, 0, shown, 0f,
+                                canvas.drawText(txt, 0, shown, 0f,
                                     -(fm.ascent + fm.descent) / 2f, beatNumPaint)
                             }
                         } catch (e: Throwable) {
@@ -2963,7 +3163,7 @@ class RecordView @JvmOverloads constructor(
                         }
                         if (fxShown == null) {
                             beatNumPaint.alpha = baseA
-                            canvas.drawText(l.lineText, 0f, -(fm.ascent + fm.descent) / 2f, beatNumPaint)
+                            canvas.drawText(txt, 0f, -(fm.ascent + fm.descent) / 2f, beatNumPaint)
                         }
                         beatNumPaint.alpha = 255
                         beatNumPaint.textScaleX = 1f
@@ -3013,7 +3213,7 @@ class RecordView @JvmOverloads constructor(
 
             // 这里传的是音符宽度（不是网格格宽）：音符/外框都用 Phira 的固定宽度
             // 负 alpha 的线在 Phira 里连音符一起不画；编辑时仍画，方便改谱
-            if (!lineHiddenByNegAlpha) drawNotesOfLine(canvas, l, now, noteW, lcX, lcY, rot, dhAll, dimmed)
+            if (!lineHiddenByNegAlpha && !coverLine) drawNotesOfLine(canvas, l, now, noteW, lcX, lcY, rot, dhAll, dimmed)
             if (visSb != null && lineA > 0.004f) {
                 visSb.append(" L").append(l.id).append("(a=").append(Math.round(lineA * 100f) / 100f)
                     .append(",r=").append(Math.round(rot)).append(",p=").append(l.posPct).append(")")
@@ -3023,11 +3223,19 @@ class RecordView @JvmOverloads constructor(
             lastPlayLogSec = sec
             if (visSb != null && visSb.isNotEmpty()) DebugLog.add("autoplay", "t=${sec}s 可见线$visSb")
             // 同一秒里"可能在画面上的长条"（排查长条残留）
+            // ★ 用**按时间排序的下标 + 二分**只扫 [now-1500, now+1500] 这一段：
+            //   以前是 `for (n in notes)` 整份扫，44 万音符的大谱每秒扫一次，
+            //   刚好卡在绘制里 ⇒ 每一秒掉一帧。
             val hs = StringBuilder()
             var hn = 0
-            for (n in notes) {
-                if (n.type != 2 || hn >= 16) continue
-                if (now < n.startMs - 1500 || now > n.endMs + 500) continue
+            val holdOrder = sortedPlayIndex()
+            var hk = lowerBoundStartMs(holdOrder, now - 1500L)
+            while (hk < holdOrder.size && hn < 16) {
+                val n = notes[holdOrder[hk]]
+                hk++
+                if (n.startMs > now + 1500L) break
+                if (n.type != 2) continue
+                if (now > n.endMs + 500L) continue
                 hs.append(" H(").append(n.lineId).append(',').append(Math.round(n.posX * 100f) / 100f)
                     .append(',').append(n.startMs).append('-').append(n.endMs).append(')')
                 hn++
@@ -3073,6 +3281,11 @@ class RecordView @JvmOverloads constructor(
 
             // 编辑模式 + 第四次：按住时画长条放置预览（起点=按下，随手指拉伸）
             if (pass == 4) {
+                // ★ 预览宽度必须和"放置后的长条"用同一个值：noteW（Phira 固定比例 13.175%）。
+                //   以前用 cellW = w/vLines × 0.55 —— 自建谱竖线数 8 时恰好≈noteW 看不出来；
+                //   导入的谱竖线数一换（16/24/32…），预览就比实际细一圈（用户报的"细了一圈"）。
+                val previewHalfW = noteW * 0.5f
+                val hintHalfW = noteW * 0.6f
                 for (i in 0 until fingers.size()) {
                     val f = fingers.valueAt(i)
                     if (!f.active || f.mode != 1) continue
@@ -3084,15 +3297,16 @@ class RecordView @JvmOverloads constructor(
                         livePaint.style = Paint.Style.STROKE
                         livePaint.strokeWidth = dp(2f)
                         livePaint.color = intColor(0xAAFFFFFF)
-                        canvas.drawRoundRect(f.downX - cellW * 0.55f, y1 - dp(10f), f.downX + cellW * 0.55f, y1 + dp(10f), dp(4f), dp(4f), livePaint)
+                        canvas.drawRoundRect(f.downX - hintHalfW, y1 - dp(10f), f.downX + hintHalfW, y1 + dp(10f), dp(4f), dp(4f), livePaint)
                         livePaint.style = Paint.Style.FILL
                     } else {
                         val x1 = f.downX
-                        val bw = cellW * 0.55f
+                        val bw = previewHalfW
                         drawTex(canvas, holdBmp, x1 - bw, minOf(y1, y2), x1 + bw, maxOf(y1, y2), 110)
-                        livePaint.color = if (rev) intColor(0x66FF5252) else intColor(0x6600E5FF)
-                        canvas.drawRect(x1 - cellW * 0.6f, y1 - dp(2f), x1 + cellW * 0.6f, y1 + dp(2f), livePaint)
-                        canvas.drawRect(x1 - cellW * 0.6f, y2 - dp(2f), x1 + cellW * 0.6f, y2 + dp(2f), livePaint)
+                        // 预览两端横线：一律白色（用户点名；以前反面=红、正面=蓝）
+                        livePaint.color = intColor(0xAAFFFFFF)
+                        canvas.drawRect(x1 - hintHalfW, y1 - dp(2f), x1 + hintHalfW, y1 + dp(2f), livePaint)
+                        canvas.drawRect(x1 - hintHalfW, y2 - dp(2f), x1 + hintHalfW, y2 + dp(2f), livePaint)
                     }
                 }
             }
@@ -3120,9 +3334,10 @@ class RecordView @JvmOverloads constructor(
                 val col = idx % hitFxCols
                 val row = idx / hitFxCols
                 texPaint.alpha = 255
-                // 蓝打击 / 黄打击：Phira 是 fx_perfect / fx_good 两张图；资源包没给就
-                // 把同一张 hit_fx 染成蓝/金两色（SRC_IN 只吃 alpha，白/灰精灵图能染干净）
-                texPaint.colorFilter = if (fx.tier == 0) fxBlueFilter else fxGoldFilter
+                // PERFECT / GOOD 两档：Phira 是 fx_perfect / fx_good 同一张精灵图 + 不同着色
+                // （perfct 淡黄、good 淡蓝，见 fxPerfectFilter/fxGoodFilter 的颜色出处）。
+                // 资源包没给就照这套颜色染，白/灰精灵图能染干净。
+                texPaint.colorFilter = if (fx.tier == 0) fxPerfectFilter else fxGoodFilter
                 fxSrc.set(col * fw, row * fh, (col + 1) * fw, (row + 1) * fh)
                 fxDst.set(fx.x - size / 2, fx.y - size / 2, fx.x + size / 2, fx.y + size / 2)
                 canvas.drawBitmap(fxBmp, fxSrc, fxDst, texPaint)
@@ -4200,14 +4415,41 @@ class RecordView @JvmOverloads constructor(
     private fun layerHasKindAnywhere(layer: Int, kind: LineKind): Boolean =
         lines.any { it.zOrder == layer && it.kind == kind }
 
+    /** 图层 [layer] 在当前页签的成员数（绘制路径每帧要问多次，不分配列表） */
+    private fun layerMemberCount(layer: Int): Int {
+        val k = if (panelTab == TAB_MIX) null else tabKind()
+        var n = 0
+        for (l in lines) if (l.zOrder == layer && (k == null || l.kind == k)) n++
+        return n
+    }
+
+    /** 图层 [layer] 里有没有当前活动线（绘制路径用，不分配列表） */
+    private fun layerHasActive(layer: Int): Boolean {
+        val k = if (panelTab == TAB_MIX) null else tabKind()
+        for (l in lines) {
+            if (l.zOrder == layer && (k == null || l.kind == k) && l.id == activeLineId) return true
+        }
+        return false
+    }
+
     /** 图层 [layer] 的类型后缀（标签用，顺序固定：判定线→图片→文字；无线 = 空串） */
     private fun layerTypeSuffix(layer: Int): String {
-        val sb = StringBuilder()
-        for (k in listOf(LineKind.Normal, LineKind.Image, LineKind.Text)) {
-            if (layerHasKindAnywhere(layer, k)) {
-                sb.append('-').append(if (k == LineKind.Image) "图片" else if (k == LineKind.Text) "文字" else "判定线")
+        var normal = false
+        var image = false
+        var text = false
+        for (l in lines) {
+            if (l.zOrder != layer) continue
+            when (l.kind) {
+                LineKind.Image -> image = true
+                LineKind.Text -> text = true
+                else -> normal = true
             }
         }
+        if (!normal && !image && !text) return ""
+        val sb = StringBuilder(12)
+        if (normal) sb.append("-判定线")
+        if (image) sb.append("-图片")
+        if (text) sb.append("-文字")
         return sb.toString()
     }
 
@@ -4242,10 +4484,12 @@ class RecordView @JvmOverloads constructor(
         return newLayer
     }
 
-    /** 这个图层是否被整体框住（层内所有判定线都在红框里） */
+    /** 这个图层是否被整体框住（层内所有判定线都在红框里；不分配成员列表） */
     private fun isLayerFramed(layer: Int): Boolean {
+        val k = if (panelTab == TAB_MIX) null else tabKind()
         var any = false
-        for (l in layerMembersOfTab(layer)) {
+        for (l in lines) {
+            if (l.zOrder != layer || (k != null && l.kind != k)) continue
             if (l.id !in selectedLines) return false
             any = true
         }
@@ -4409,6 +4653,9 @@ class RecordView @JvmOverloads constructor(
     /** 抽屉列表缓存：面板打开且播放时每帧都要问一次，别每帧 new 一整列 PanelEntry */
     private var panelCacheKey = 0L
     private var panelCache: List<PanelEntry> = emptyList()
+    /** [panelContentH] 的缓存（key 与列表缓存同一个，列表一变就重算） */
+    private var panelHKey = -1L
+    private var panelHValue = 0f
 
     /** 组合 key 覆盖所有会改变列表的输入；逐帧只做数值运算，零对象分配 */
     private fun panelKey(): Long {
@@ -4420,12 +4667,17 @@ class RecordView @JvmOverloads constructor(
         h = h * 31 + noiseAreas.size
         h = h * 31 + videos.size
         h = h * 31 + videoIndex
-        h = h * 31 + panelExpandedLayers.hashCode()
-        h = h * 31 + noiseExpandedLayers.hashCode()
+        // ★ 集合必须"每个元素先混洗再相加"：HashSet<Int>.hashCode() 是元素值相加，
+        //   {0} 和 {} 都是 0、{0,1} 和 {1} 都是 1 ⇒ 点图层夹时缓存不失效、夹子永远打不开
+        //   （1.10.24 图层夹点不开的根因，1.10.18 没有这层缓存所以正常）。
+        //   以前用 sorted() 修，但每帧都新建 3 个列表；setHash 零分配、且元素 0 也有贡献。
+        h = h * 31 + setHash(panelExpandedLayers)
+        h = h * 31 + setHash(noiseExpandedLayers)
         h = h * 31 + (noiseRowCache?.size ?: -1)
         // ★ 声明的空图层（「新建图层」加出来的）也必须进 key：只加声明、不加线时
         //   lines.size 不变 ⇒ 列表缓存不失效 ⇒ 新图层要切一次页签才出现（用户点名）。
         h = h * 31 + declaredLayers.size
+        h = h * 31 + setHash(declaredLayers)
         for (i in lines.indices) {
             val l = lines[i]
             h = h * 31 + l.id
@@ -4442,6 +4694,16 @@ class RecordView @JvmOverloads constructor(
         panelCache = out
         panelCacheKey = key
         return out
+    }
+
+    /** 集合的零分配哈希：逐元素混洗后相加（不能直接用 Set.hashCode，见 [panelKey]） */
+    private fun setHash(values: Collection<*>): Long {
+        var x = 0L
+        for (v in values) {
+            val hc = (v?.hashCode() ?: 0).toLong()
+            x += (hc + 0x5DEECE66DL) * 0x9E3779B1L
+        }
+        return x
     }
 
     private fun buildPanelEntries(): List<PanelEntry> {
@@ -4480,8 +4742,14 @@ class RecordView @JvmOverloads constructor(
     private fun entryH(e: PanelEntry): Float = if (e.isFolder) panelFolderH() else panelRowH()
 
     private fun panelContentH(): Float {
+        // 先取列表（会刷新 panelCacheKey），同一份列表只算一次：
+        // 滚动条/最大滚动量每帧都要问，列表可能有几百行
+        val es = panelEntries()
+        if (panelCacheKey == panelHKey) return panelHValue
         var h = 0f
-        for (e in panelEntries()) h += entryH(e)
+        for (e in es) h += entryH(e)
+        panelHKey = panelCacheKey
+        panelHValue = h
         return h
     }
 
@@ -4599,23 +4867,36 @@ class RecordView @JvmOverloads constructor(
      * 重排后各层上下关系与窗口一致。一个撤销步。
      */
     fun repositionLayer(dragLayer: Int, targetLayer: Int): Int {
-        val order = lines.map { it.zOrder }.distinct().sortedDescending().toMutableList()
+        if (dragLayer == targetLayer) return 0
+        // ★ 空图层（只有 declaredLayers 里有、没有任何线）也要能拖：一并进顺序表
+        val order = (lines.map { it.zOrder } + declaredLayers).distinct().sortedDescending().toMutableList()
         val fromIdx = order.indexOf(dragLayer)
-        if (fromIdx < 0 || dragLayer == targetLayer) return 0
+        if (fromIdx < 0) return 0
         order.removeAt(fromIdx)
         val toIdx = order.indexOf(targetLayer)
         order.add(toIdx.coerceIn(0, order.size), dragLayer)
+        // 旧图层值 → 新图层值（顶层最大）。图层值被重排后，空层声明和"展开状态"要跟着搬家，
+        // 否则展开的夹子会突然变成另一层（或自动收起）。
+        val remap = HashMap<Int, Int>(order.size)
+        for (i in order.indices) remap[order[i]] = order.size - i
         val own = tx == null
         if (own) beginTx()
         linesMutate {
             // 顶层（位置 0）拿最大值，往下递减
-            val top = order.size
-            for (i in order.indices) {
-                val z = top - i
-                for (l in lines) if (l.zOrder == order[i]) l.zOrder = z
+            for (l in lines) remap[l.zOrder]?.let { l.zOrder = it }
+            if (declaredLayers.isNotEmpty()) {
+                val moved = declaredLayers.mapNotNull { remap[it] }
+                declaredLayers.clear()
+                declaredLayers.addAll(moved)
+            }
+            if (panelExpandedLayers.isNotEmpty()) {
+                val moved = panelExpandedLayers.mapNotNull { remap[it] }
+                panelExpandedLayers.clear()
+                panelExpandedLayers.addAll(moved)
             }
         }
         if (own) endTx()
+        panelCacheKey = 0L
         DebugLog.add("line", "layer reposition $dragLayer -> pos $toIdx (order=$order)")
         onLinesChanged?.invoke()
         invalidate()
@@ -4709,6 +4990,247 @@ class RecordView @JvmOverloads constructor(
 
     /** 左侧剪贴板窗口是否展开 */
     val isClipPanelOpen: Boolean get() = clipOpen
+
+    /**
+     * 快捷操作（外接键盘）：显示/收起「判定线面版」。
+     * 两个侧边窗口互斥，和手指从侧边把手拉开走的是同一套 openPanel/closeLinePanel。
+     * [keepSelection] 语义沿用 closeLinePanel：收起时不清掉框选的红框。
+     */
+    fun toggleLinePanelFromKeyboard(show: Boolean) {
+        if (show) {
+            if (clipOpen) closeClipPanel()
+            if (!panelOpen) openPanel(height * 0.5f)
+        } else if (panelOpen) {
+            closeLinePanel(keepSelection = true)
+        }
+        invalidate()
+    }
+
+    /** 快捷操作（外接键盘）：显示/收起「剪切板」窗口 */
+    fun toggleClipPanelFromKeyboard(show: Boolean) {
+        if (show) {
+            if (panelOpen) closeLinePanel(keepSelection = true)
+            if (!clipOpen) openClipPanel(height * 0.5f)
+        } else {
+            closeClipPanel()
+        }
+        invalidate()
+    }
+
+    /** 快捷操作（外接键盘）：Q/E 单击一步 = 一个横细线（时间量化格）的毫秒数 */
+    fun gridStepMs(): Long = cellMs().toLong().coerceAtLeast(1L)
+
+    // ------------------------------------------------ 快捷操作：侧边面板键盘导航
+    /** 当前打开的侧边面板：0=无 1=判定线 2=剪贴板 */
+    val keyboardPanel: Int get() = when { panelOpen -> 1; clipOpen -> 2; else -> 0 }
+
+    private fun screenRect(local: RectF): RectF {
+        val a = IntArray(2); getLocationOnScreen(a)
+        return RectF(local.left + a[0], local.top + a[1],
+            local.right + a[0], local.bottom + a[1])
+    }
+
+    /** 面板所有行的屏幕坐标矩形（白色直角虚线框用）；面板没开返回空 */
+    fun keyboardPanelRects(): List<RectF> {
+        val out = ArrayList<RectF>()
+        if (panelOpen) {
+            val r = panelRect(); val es = panelEntries(); val lt = panelListTop(r)
+            var acc = 0f
+            for (e in es) {
+                val h = entryH(e)
+                out.add(screenRect(RectF(r.left + dp(4f), lt - panelScroll + acc,
+                    r.right - dp(4f), lt - panelScroll + acc + h)))
+                acc += h
+            }
+        } else if (clipOpen) {
+            val r = clipPanelRect(); val lt = clipListTop(r); val rh = clipRowH()
+            for (i in 0 until clipRowCount()) {
+                out.add(screenRect(RectF(r.left, lt - clipScroll + i * rh,
+                    r.right, lt - clipScroll + (i + 1) * rh)))
+            }
+        }
+        return out
+    }
+
+    /** 把第 [index] 行滚进可视区（上下键贴边滚动） */
+    fun keyboardPanelEnsureVisible(index: Int) {
+        if (panelOpen) {
+            val r = panelRect(); val es = panelEntries()
+            if (index !in es.indices) return
+            val lt = panelListTop(r); val lb = panelListBottom(r)
+            val top = lt - panelScroll + panelEntryTop(es, index)
+            val bot = top + entryH(es[index])
+            if (bot > lb) panelScroll += bot - lb
+            if (top < lt) panelScroll -= lt - top
+            panelScroll = panelScroll.coerceIn(0f, panelMaxScroll())
+        } else if (clipOpen) {
+            val r = clipPanelRect(); val lt = clipListTop(r); val rh = clipRowH()
+            val limit = r.bottom - dp(6f)
+            val top = lt - clipScroll + index * rh
+            val bot = top + rh
+            if (bot > limit) clipScroll += bot - limit
+            if (top < lt) clipScroll -= lt - top
+            clipScroll = clipScroll.coerceIn(0f, clipMaxScroll())
+        }
+        invalidate()
+    }
+
+    /**
+     * 键盘左右滑的**独立视觉动画**（0.5 秒）：把行按方向平移再回弹。
+     * 判定线左滑时 rowDragActive=true，绘制里会自然出现那两个复制圆圈。
+     * 业务操作由 [keyboardPanelAct] 立即触发，动画不参与、也不延后它。
+     */
+    private var kbSwipeAnim: android.animation.ValueAnimator? = null
+    /** 剪贴板动画的独立残影：不依赖 clipRowCount()，因为左滑会删掉那一条 */
+    private var kbClipAnimTop = -1f
+    private var kbClipAnimDx = 0f
+    /** 左滑=删除红，右滑=导出绿（和原手势底色一致） */
+    private var kbClipAnimColor = 0x55FF5252L
+
+    /**
+     * 键盘左右滑的视觉动画（**0.2 秒**）。
+     * [hold] = true：滑到终点就停住不回弹（判定线左滑按住选圆圈，直到下一步操作）。
+     */
+    fun keyboardPanelSwipeAnim(index: Int, act: Int, hold: Boolean = false) {
+        if (keyboardPanel == 0) return
+        kbSwipeAnim?.cancel()
+        val line = keyboardPanel == 1
+        val right = act == KbAct.SWIPE_RIGHT || act == KbAct.SWIPE_RIGHT2
+        val second = act == KbAct.SWIPE_LEFT2 || act == KbAct.SWIPE_RIGHT2
+        val pw = if (line) panelRect().width() else clipPanelRect().width()
+        val dist = if (hold) -pw * 0.6f
+        else pw * (if (second) 0.95f else 0.8f) * (if (right) 1f else -1f)
+        if (line) {
+            rowDragActive = true; rowDragRow = index; rowDragDx = 0f
+            rowDragTarget = if (hold) 1 else 0       // hold：第一个圆圈高亮
+        } else {
+            // 用独立残影，不用 clipSwipeRow —— 左滑会把这一条删掉，行循环就走不到它了
+            kbClipAnimTop = clipListTop(clipPanelRect()) - clipScroll + index * clipRowH()
+            kbClipAnimDx = 0f
+            kbClipAnimColor = if (right) 0x5500C853L else 0x55FF5252L
+        }
+        val a = if (hold) android.animation.ValueAnimator.ofFloat(0f, dist)
+        else android.animation.ValueAnimator.ofFloat(0f, dist, 0f)
+        a.duration = 200L
+        a.addUpdateListener {
+            if (line) rowDragDx = it.animatedValue as Float
+            else kbClipAnimDx = it.animatedValue as Float
+            invalidate()
+        }
+        a.addListener(object : android.animation.AnimatorListenerAdapter() {
+            override fun onAnimationEnd(animation: android.animation.Animator) {
+                if (!hold) {
+                    if (line) { rowDragActive = false; rowDragRow = -1; rowDragDx = 0f; rowDragTarget = 0 }
+                    else { kbClipAnimTop = -1f; kbClipAnimDx = 0f }
+                }
+                invalidate()
+            }
+        })
+        kbSwipeAnim = a
+        a.start()
+    }
+
+    /** 按住 "<" 期间按 "/"：切到第二个圆圈（带音符）并高亮 */
+    fun keyboardPanelSetCircle(second: Boolean) {
+        if (!rowDragActive) return
+        kbSwipeAnim?.cancel()          // hold 动画到此为止，别再覆盖位移
+        rowDragTarget = if (second) 2 else 1
+        val from = rowDragDx
+        val to = -panelRect().width() * (if (second) 0.8f else 0.6f)
+        val a = android.animation.ValueAnimator.ofFloat(from, to)
+        a.duration = 200L
+        a.addUpdateListener {
+            rowDragDx = it.animatedValue as Float
+            invalidate()
+        }
+        kbSwipeAnim = a
+        a.start()
+    }
+
+    /** 判定线左滑"按住选圆圈"结束时，立刻收掉动画状态 */
+    fun keyboardPanelResetSwipe() {
+        kbSwipeAnim?.cancel()
+        kbSwipeAnim = null
+        if (rowDragActive) { rowDragActive = false; rowDragRow = -1; rowDragDx = 0f; rowDragTarget = 0 }
+        if (clipSwipeRow >= 0) { clipSwipeRow = -1; clipSwipeDx = 0f }
+        kbClipAnimTop = -1f
+        kbClipAnimDx = 0f
+        kbClipAnimColor = 0x55FF5252L
+        invalidate()
+    }
+
+    /**
+     * 把键盘动作（单击 / 长按 / 左滑 1~2 档 / 右滑 1~2 档）翻成模拟触摸，
+     * 直接走面板原有的 onTouchEvent 分支 —— 圆圈的「不带音符 / 带音符」复制、
+     * 右滑删除、剪贴板左右滑删除/导出、长按排序等一律复用，不在键盘侧重写。
+     * 左滑 2 档（"<"+"/"）= 把手指落到第 2 个复制圆圈上；1 档 = 第 1 个圆圈。
+     */
+    fun keyboardPanelAct(index: Int, act: Int) {
+        if (keyboardPanel == 0) return
+        keyboardPanelEnsureVisible(index)
+        val line = keyboardPanel == 1
+        val r = if (line) panelRect() else clipPanelRect()
+        val es = if (line) panelEntries() else null
+        val cy: Float
+        if (line) {
+            if (index !in es!!.indices) return
+            cy = panelListTop(r) - panelScroll + panelEntryTop(es, index) + entryH(es[index]) / 2f
+        } else {
+            cy = clipListTop(r) - clipScroll + (index + 0.5f) * clipRowH()
+        }
+        if (cy < 0f || cy > height) return
+        val circles = if (line && index in es!!.indices && entryShowsCopyCircles(es[index]))
+            copyCircleCenters(panelEntryTop(es, index), r) else null
+        val second = act == KbAct.SWIPE_LEFT2 || act == KbAct.SWIPE_RIGHT2
+        val right = act == KbAct.SWIPE_RIGHT || act == KbAct.SWIPE_RIGHT2
+        val left = act == KbAct.SWIPE_LEFT || act == KbAct.SWIPE_LEFT2
+        val downX = when {
+            right -> r.left + dp(20f)
+            left -> r.right - dp(30f)
+            else -> (r.left + r.right) / 2f
+        }
+        val now = SystemClock.uptimeMillis()
+        fun fire(action: Int, x: Float, y: Float, t: Long) {
+            val me = MotionEvent.obtain(now, t, action, x, y, 0)
+            onTouchEvent(me)
+            try { me.recycle() } catch (_: Exception) {}
+        }
+        fire(MotionEvent.ACTION_DOWN, downX, cy, now)
+        when {
+            act == KbAct.LONG -> {
+                // 判定线长按判定 = elapsedRealtime - panelDownTime >= 500，
+                // 直接把按下时刻往前拨，抬手立刻成立（不再 postDelayed 等 0.5 秒）。
+                panelDownTime = SystemClock.elapsedRealtime() - 600L
+                if (!line) {
+                    // 剪贴板长按靠 500ms Runnable 置位；直接置位，免得立刻抬手落回"单击粘贴"
+                    clipMoveActive = true
+                    clipMoveRow = index
+                    clipMovePending?.let { removeCallbacks(it); clipMovePending = null }
+                }
+                fire(MotionEvent.ACTION_UP, downX, cy, now + 16)
+            }
+            left -> {
+                val tx = when {
+                    circles != null && second -> circles[2]
+                    circles != null -> circles[0]
+                    else -> r.left - r.width() * 0.75f
+                }
+                val mx = downX + (tx - downX) * 0.5f
+                fire(MotionEvent.ACTION_MOVE, mx, cy, now + 16)
+                fire(MotionEvent.ACTION_MOVE, tx, cy, now + 32)
+                fire(MotionEvent.ACTION_UP, tx, cy, now + 48)
+            }
+            right -> {
+                val tx = r.left + r.width() * (if (second) 0.95f else 0.8f)
+                val mx = downX + (tx - downX) * 0.5f
+                fire(MotionEvent.ACTION_MOVE, mx, cy, now + 16)
+                fire(MotionEvent.ACTION_MOVE, tx, cy, now + 32)
+                fire(MotionEvent.ACTION_UP, tx, cy, now + 48)
+            }
+            else -> fire(MotionEvent.ACTION_UP, downX, cy, now + 16)
+        }
+        invalidate()
+    }
 
     /** 新建判定线：插到现有判定线之间最大的空隙正中 */
     fun addLineSmart(): Line? {
@@ -4923,13 +5445,6 @@ class RecordView @JvmOverloads constructor(
         invalidate()
     }
 
-    fun closeVideoEdit() {
-        if (videoIndex == -1) return
-        videoIndex = -1
-        invalidateVideoRows()
-        invalidate()
-    }
-
     private fun removeVideoAt(index: Int) {
         if (index !in videos.indices) return
         val v = videos[index]
@@ -5078,7 +5593,8 @@ class RecordView @JvmOverloads constructor(
                 LineKind.Text -> {
                     scaleOf(l, now, scaleScratch)
                     beatNumPaint.textSize = (50f * scaleScratch[1] * k).coerceAtLeast(dp(6f))
-                    val tw = beatNumPaint.measureText(l.lineText)
+                    // 点击判定用**当前时刻**那段文字（一条文字线可以有几十条 textEvents）
+                    val tw = beatNumPaint.measureText(l.textAt(now))
                     val fm = beatNumPaint.fontMetrics
                     val th = (fm.descent - fm.ascent).coerceAtLeast(dp(8f))
                     if (Math.abs(lx) <= tw / 2f + dp(8f) && Math.abs(ly) <= th / 2f + dp(8f)) return l
@@ -5163,7 +5679,7 @@ class RecordView @JvmOverloads constructor(
 
         // 左侧灰条（面板打开时淡出）
         val barA = 1f - clipAnim
-        if (barA > 0.02f && !lineEditActive && !noiseEditActive && !(playMode && hideBars)) {     // 编辑判定线/噪域、Autoplay 收起遮罩时把左侧长条藏起来
+        if (barA > 0.02f && !lineEditActive && !noiseEditActive && !(playMode && hideBars) && !hideSideBars) {     // 编辑判定线/噪域、Autoplay 收起遮罩/「隐藏灰条」时把左侧长条藏起来
             val br = clipBarRect()
             livePaint.style = Paint.Style.FILL
             livePaint.color = ((0xB4 * barA).toInt() shl 24) or 0xC8CDD6
@@ -5190,6 +5706,16 @@ class RecordView @JvmOverloads constructor(
         val rowH = clipRowH()
         canvas.save()
         canvas.clipRect(r.left + dp(2f), top, r.right - dp(2f), bot)
+        // 键盘左滑的独立残影：条目可能已被删除，不能靠行循环来画
+        if (kbClipAnimDx != 0f && kbClipAnimTop >= 0f) {
+            canvas.save()
+            canvas.translate(kbClipAnimDx, 0f)
+            livePaint.style = Paint.Style.FILL
+            livePaint.color = intColor(kbClipAnimColor)
+            canvas.drawRect(r.left + dp(8f), kbClipAnimTop + dp(3f),
+                r.right - dp(8f), kbClipAnimTop + rowH - dp(3f), livePaint)
+            canvas.restore()
+        }
         if (clipShiftAnim.size != clipRowCount()) clipShiftAnim = FloatArray(clipRowCount())
         for (i in 0 until clipRowCount()) {
             // 被跨过的行：目标位移 ±rowH，按帧缓动走过去（原来是一瞬间跳一格）
@@ -5559,21 +6085,15 @@ class RecordView @JvmOverloads constructor(
      */
     private fun lineLabel(l: Line): String {
         val n = l.name
-        val tag = when (l.kind) {
-            LineKind.Image -> "图片线"
-            LineKind.Text -> "文字线"
-            else -> ""
-        }
+        val prefix = LineNames.prefixOf(l.kind)          // "判定线 " / "图片线 " / "文字线 "
         // 新命名规则的自动名（带类型前缀 + 数字）：就是它本身，直接显示
-        val prefix = if (tag.isEmpty()) "判定线 " else "$tag "
-        if (n.startsWith(prefix) && n.length > prefix.length && n.drop(prefix.length).all { it.isDigit() }) {
-            return n
-        }
-        val okGenerated = n.isEmpty() || n == "line" || (n.startsWith("line") && n.drop(4).all { it.isDigit() })
-        // 旧自动名的线按类型显示；用户自己起的名字原样显示，只在后面补一个类型标记
-        val gen = "判定线 ${l.id + 1}"
+        if (LineNames.isAutoName(l.kind, n)) return n
+        val tag = prefix.trim()
+        // 旧自动名的线按类型显示（显示号 = id + 1，和 [LineNames.next] 的计数口径一致）；
+        // 用户自己起的名字原样显示，只在后面补一个类型标记
+        val okGenerated = LineNames.isLegacyAutoName(n)
         return when {
-            tag.isEmpty() -> if (okGenerated) gen else n
+            tag == "判定线" -> if (okGenerated) "判定线 ${l.id + 1}" else n
             okGenerated -> "$tag ${l.id + 1}"
             else -> "$n（$tag）"
         }
@@ -5620,10 +6140,8 @@ class RecordView @JvmOverloads constructor(
             livePaint.style = Paint.Style.STROKE
             livePaint.strokeWidth = dp(2f)
             livePaint.color = intColor(0xFFFF5252)
-            canvas.drawRoundRect(
-                rr.left - pad, rr.top - pad, rr.right + pad, rr.bottom + pad,
-                dp(12f), dp(12f), livePaint
-            )
+            // 直角红框（用户点名：判定线窗口里的红框/蓝框都不要圆角）
+            canvas.drawRect(rr.left - pad, rr.top - pad, rr.right + pad, rr.bottom + pad, livePaint)
             livePaint.style = Paint.Style.FILL
         }
         canvas.restore()
@@ -5778,11 +6296,11 @@ class RecordView @JvmOverloads constructor(
 
     private fun drawFolderChrome(canvas: Canvas, r: RectF, e: PanelEntry, top: Float, h: Float, rr: RectF) {
         canvas.save()
-        val members = layerMembersOfTab(e.layer).size
+        val members = layerMemberCount(e.layer)
         val expanded = e.layer in panelExpandedLayers
         // 框住的图层：**只有最外层那条（大 5% 的）边变红**，里面那圈边和夹子本身仍按蓝色（用户点名）
         val framedLayer = isLayerFramed(e.layer)
-        val hasActive = layerMembersOfTab(e.layer).any { it.id == activeLineId }
+        val hasActive = layerHasActive(e.layer)
         // 外圈：被框住 → 红；否则按含活动线的蓝 / 中性
         val cAccent = when {
             framedLayer -> 0xFFFF5252
@@ -5841,7 +6359,7 @@ class RecordView @JvmOverloads constructor(
 
         // 把手（抽屉打开时淡出），圆角 2.5dp、没有花纹
         val barA = 1f - panelAnim
-        if (barA > 0.02f && !(playMode && hideBars)) {
+        if (barA > 0.02f && !(playMode && hideBars) && !hideSideBars) {
             val br = edgeBarRect()
             livePaint.style = Paint.Style.FILL
             livePaint.color = ((0xB4 * barA).toInt() shl 24) or 0xC8CDD6
@@ -5915,21 +6433,22 @@ class RecordView @JvmOverloads constructor(
         canvas.translate(panelTabDx, 0f)
         if (rowShiftAnim.size != es.size) rowShiftAnim = FloatArray(es.size)
         var acc = 0f
+        // 拖动行的下标按"图层值 / 线 id"重新定位（拖图层夹时列表只剩夹子，按下时的行号已失效）
+        val moveFrom = if (rowMoveActive) rowMoveIndex(es) else -1
         val groupBorders = ArrayList<Pair<RectF, Int>>()   // 展开的收纳夹：外"边"范围 + 图层值
-        if (rowShiftAnim.size != es.size) rowShiftAnim = FloatArray(es.size)
         for (i in es.indices) {
             val e = es[i]
             // 被跨过的条目：让位躲避动画（拖文件夹 = 其它夹子让位；拖线 = 其它行让位）。
             // **合并模式（拖被框住的图层）/拖被框住的判定线 都不做躲避动画**（用户点名）
             val mergeMode = (rowMoveLayer != null && isLayerFramed(rowMoveLayer!!)) ||
-                (rowMoveLayer == null && es.getOrNull(rowMoveFrom)?.lineIndex
+                (rowMoveLayer == null && es.getOrNull(moveFrom)?.lineIndex
                     ?.takeIf { it >= 0 }?.let { lines.getOrNull(it)?.id }?.let { it in selectedLines } == true)
             var targetShift = 0f
-            if (!mergeMode && rowMoveActive && rowMoveTarget >= 0 && i != rowMoveFrom) {
-                val dH = entryH(es.getOrNull(rowMoveFrom) ?: e)
+            if (!mergeMode && rowMoveActive && rowMoveTarget >= 0 && moveFrom >= 0 && i != moveFrom) {
+                val dH = entryH(es.getOrNull(moveFrom) ?: e)
                 when {
-                    rowMoveFrom < rowMoveTarget && i in (rowMoveFrom + 1)..rowMoveTarget -> targetShift = -dH
-                    rowMoveFrom > rowMoveTarget && i in rowMoveTarget until rowMoveFrom -> targetShift = dH
+                    moveFrom < rowMoveTarget && i in (moveFrom + 1)..rowMoveTarget -> targetShift = -dH
+                    moveFrom > rowMoveTarget && i in rowMoveTarget until moveFrom -> targetShift = dH
                 }
             }
             val prevS = rowShiftAnim[i]
@@ -5939,7 +6458,7 @@ class RecordView @JvmOverloads constructor(
             acc += entryH(e)
             if (top > listBottom || top + entryH(e) < listTop) continue
             if (rowDragActive && i == rowDragRow) continue        // 左右拖动的那行单独画（跟手）
-            if (rowMoveActive && i == rowMoveFrom) continue      // 上下拖动的那行单独画（跟手）
+            if (rowMoveActive && i == moveFrom) continue      // 上下拖动的那行单独画（跟手）
             if (e.videoIndex >= 0) {
                 drawVideoRow(canvas, r, e.videoIndex, top, dx = 0f)
                 continue
@@ -5976,7 +6495,7 @@ class RecordView @JvmOverloads constructor(
         for (g in groupBorders) {
             val br = g.first
             val framedLayer = isLayerFramed(g.second)
-            val hasActive = layerMembersOfTab(g.second).any { it.id == activeLineId }
+            val hasActive = layerHasActive(g.second)
             livePaint.style = Paint.Style.STROKE
             livePaint.strokeWidth = dp(1.5f)
             livePaint.color = when {
@@ -5984,14 +6503,12 @@ class RecordView @JvmOverloads constructor(
                 hasActive -> intColor(0xFF00E5FF)
                 else -> intColor(0x66FFFFFF)
             }
-            canvas.drawRoundRect(br, dp(10f), dp(10f), livePaint)
+            // 直角边框（用户点名：红框/蓝框都不要圆角）
+            canvas.drawRect(br, livePaint)
             val inset = dp(2.5f)
             livePaint.strokeWidth = dp(1f)
             livePaint.color = if (hasActive) intColor(0x8800E5FF) else intColor(0x33FFFFFF)
-            canvas.drawRoundRect(
-                br.left + inset, br.top + inset, br.right - inset, br.bottom - inset,
-                dp(8f), dp(8f), livePaint
-            )
+            canvas.drawRect(br.left + inset, br.top + inset, br.right - inset, br.bottom - inset, livePaint)
             livePaint.style = Paint.Style.FILL
         }
         canvas.restore()
@@ -6048,12 +6565,12 @@ class RecordView @JvmOverloads constructor(
         canvas.drawText(addLabel, addR.centerX(), addR.centerY() + dp(5f), panelPaint)
         canvas.restore()
 
-        if (rowMoveActive && rowMoveFrom in es.indices) {
+        if (rowMoveActive && moveFrom in es.indices) {
             // 上下拖动：整行跟着手指走（同样裁在列表区域内 —— 拖出窗口时暂时看不见，但不能画到窗口外面）
             canvas.save()
             canvas.clipRect(r.left + dp(2f), listTop, r.right - dp(2f), listBottom)
-            val moveTop = listTop - panelScroll + panelEntryTop(es, rowMoveFrom) + rowMoveDy
-            val me = es[rowMoveFrom]
+            val moveTop = listTop - panelScroll + panelEntryTop(es, moveFrom) + rowMoveDy
+            val me = es[moveFrom]
             if (me.noiseIndex >= 0) drawNoiseRow(canvas, r, me.noiseIndex, moveTop, dx = 0f, fromMove = true)
             else if (me.videoIndex >= 0) drawVideoRow(canvas, r, me.videoIndex, moveTop, dx = 0f, fromMove = true)
             else if (me.noiseFolder) drawNoiseFolderRow(canvas, r, me, moveTop, fromMove = true)
@@ -6160,6 +6677,26 @@ class RecordView @JvmOverloads constructor(
     }
 
     /** 抽屉/把手的事件处理；返回 true 表示这次事件被吃掉了 */
+    /** 图层夹点击：展开 / 收起（噪域夹与判定线收纳夹都走这里） */
+    private fun toggleFolderExpand(entry: PanelEntry) {
+        DebugLog.add("panel",
+            "folder tap layer=${entry.layer} noise=${entry.noiseFolder} " +
+            "members=${if (entry.noiseFolder) "n/a" else layerMembersOfTab(entry.layer).size} " +
+            "tab=$panelTab expanded=${panelExpandedLayers.contains(entry.layer)}")
+        if (entry.noiseFolder) {
+            if (entry.noiseLayer in noiseExpandedLayers) noiseExpandedLayers.remove(entry.noiseLayer)
+            else noiseExpandedLayers.add(entry.noiseLayer)
+            invalidateNoiseRows()
+        } else {
+            // 收纳夹：**只有本页签（混合页 = 全部）有成员才能展开**，跨页签封面只是占位
+            if (layerMembersOfTab(entry.layer).isNotEmpty()) {
+                if (entry.layer in panelExpandedLayers) panelExpandedLayers.remove(entry.layer)
+                else panelExpandedLayers.add(entry.layer)
+            }
+        }
+        invalidate()
+    }
+
     private fun handleLineSwitcherTouch(e: MotionEvent): Boolean {
         // Autoplay 收起上下遮罩时，右侧灰条也隐藏并停止接管触摸
         if (playMode && hideBars) return false
@@ -6211,6 +6748,7 @@ class RecordView @JvmOverloads constructor(
                 panelScrolling = false
                 rowMoveActive = false
                 rowMoveMoved = false
+                rowMoveLineId = -1
                 rowDragActive = false
                 rowDragDx = 0f
                 rowDragTarget = 0
@@ -6419,20 +6957,34 @@ class RecordView @JvmOverloads constructor(
                         panelDownRow = -1
                         return true
                     }
+                    // ★ 图层夹点击优先：任何红框/手势状态都不该吞掉"点夹子展开/收起"
+                    //   （回归根因：长按过判定线后 selectedLines 非空，曾有分支把窗口内
+                    //    所有点击都当"取消框选"，图层夹就再也点不开了。）
+                    val clickFolder = panelEntries().getOrNull(panelDownRow)
+                    if (!rowMoveActive && !rowDragActive && !footerDragActive &&
+                        clickFolder != null && clickFolder.isFolder &&
+                        !panelScrolling && panelRect().contains(x, y)
+                    ) {
+                        toggleFolderExpand(clickFolder)
+                        panelDownRow = -1
+                        return true
+                    }
                     val hasAnyFrame = selectedLines.isNotEmpty() || noiseSelectedLayers.isNotEmpty() || noiseEditActive
                     if (hasAnyFrame && !rowMoveActive && !rowMoveMoved && !rowDragActive &&
-                        panelRect().contains(x, y)
+                        panelRect().contains(x, y) && panelDownRow < 0
                     ) {
-                        // **有红框时，窗口内"没拖动"的一下（不论按多久、按在哪里）只取消框选**：
-                        // 判定线和噪域都适用；噪域同时退出编辑。点窗口外只关窗口、不取消框住。
-                        // 判定故意做松（只看"没有位移"），不会顶掉"长按框住第二个/拖动改图层"。
-                        clearFrameSelection()
+                        // **有红框时，点窗口内"空白处"（非行/非页脚）= 只取消框选**。
+                        // ★ 不能吞掉"点在行上"的点击：activateLine 会把当前线放进红框集合，
+                        //   于是 selectedLines 几乎总是非空，原条件会把"点图层夹展开"也吃掉
+                        //   （表现为图层夹点不开）。判定线和噪域行各自的分支保留原取消逻辑。
                         if (noiseSelectedLayers.isNotEmpty() || noiseEditActive) {
                             noiseSelectedLayers.clear()
                             if (noiseEditActive) stopNoiseEdit()
                             noiseEditIndex = -1
                             invalidateNoiseRows()
                             invalidate()
+                        } else {
+                            clearFrameSelection()
                         }
                     } else if (panelDownRow == -2 && panelAddRect().contains(x, y)) {
                         // 页脚按钮按页签动作
@@ -6451,25 +7003,7 @@ class RecordView @JvmOverloads constructor(
                     } else if (panelDownRow >= 0 && panelRowAt(x, y) == panelDownRow) {
                         val entry = panelEntries().getOrNull(panelDownRow)
                         if (entry != null && entry.isFolder) {
-                            if (entry.noiseFolder) {
-                                // 噪域图层夹：点击 = 展开/收起
-                                if (entry.noiseLayer in noiseExpandedLayers) noiseExpandedLayers.remove(entry.noiseLayer)
-                                else noiseExpandedLayers.add(entry.noiseLayer)
-                                invalidateNoiseRows()
-                                invalidate()
-                            } else {
-                                // 收纳夹：点击 = 展开 / 收起。**只有本页签（混合页 = 全部）有成员才能展开**，
-                                // 跨页签封面（其它类型图层/空图层）只是占位，点不开（用户点名）
-                                if (layerMembersOfTab(entry.layer).isEmpty()) {
-                                    invalidate()
-                                } else if (entry.layer in panelExpandedLayers) {
-                                    panelExpandedLayers.remove(entry.layer)
-                                    invalidate()
-                                } else {
-                                    panelExpandedLayers.add(entry.layer)
-                                    invalidate()
-                                }
-                            }
+                            toggleFolderExpand(entry)      // 兜底：夹子点击统一走这里
                         } else if (entry != null) {
                             if (entry.videoIndex >= 0) {
                                 // 短按 = 选中高亮（长按才进入属性编辑）
@@ -6525,6 +7059,7 @@ class RecordView @JvmOverloads constructor(
             val dt = edgeScrollSpeed.toInt()
             if (dt != 0) {
                 addEditSeek(dt)
+                maybeBoxSweep()      // 框选中贴边滚动：滚过的每一屏都增量框住（40ms 节流）
                 // 让被拖的音符"钉"在手指下面：
                 //  - 整组拖动：用的是相对按下点的差值 → 补 extraDt
                 //  - 单个拖动：时间是从指尖位置重算的 → 直接把它的时间也推 dt（下一次 MOVE 会重算，不会叠加）
@@ -6602,16 +7137,38 @@ class RecordView @JvmOverloads constructor(
         if (panelDownRow < 0 || panelDownRow >= es.size) return
         // 视频行不支持上下拖动排序：长按是打开属性编辑（由 ACTION_UP 处理）
         if (es[panelDownRow].videoIndex >= 0) return
+        val e = es[panelDownRow]
         rowMoveActive = true
         rowMoveMoved = false
         rowMoveFrom = panelDownRow
         rowMoveTarget = panelDownRow
-        rowMoveLayer = if (es[panelDownRow].isFolder && !es[panelDownRow].noiseFolder) es[panelDownRow].layer else null
+        rowMoveLayer = if (e.isFolder && !e.noiseFolder) e.layer else null
+        rowMoveLineId = if (!e.isFolder && e.lineIndex >= 0) lines.getOrNull(e.lineIndex)?.id ?: -1 else -1
         rowMoveStartY = rowMoveLastY   // 用触发瞬间的手指位置，偏移从 0 起算，不会跳
         rowMoveDy = 0f
         rowMoveLastY = y
         postOnAnimation(rowMoveScrollRunnable)
         invalidate()
+    }
+
+    /**
+     * 正在竖拖的条目在**当前**列表里的下标。
+     * 拖动图层夹时列表会重建成"只有图层夹"，按下时的行号 [rowMoveFrom] 已经对不上
+     * （1.10.18/1.10.24 的图层拖动/合并失效、拖动行画错就是这么来的），
+     * 所以按"图层值 / 线 id"重新找一遍。
+     */
+    private fun rowMoveIndex(es: List<PanelEntry> = panelEntries()): Int {
+        val layer = rowMoveLayer
+        if (layer != null) {
+            val i = es.indexOfFirst { it.isFolder && !it.noiseFolder && it.layer == layer }
+            if (i >= 0) return i
+        }
+        val id = rowMoveLineId
+        if (id >= 0) {
+            val i = es.indexOfFirst { it.lineIndex >= 0 && lines.getOrNull(it.lineIndex)?.id == id }
+            if (i >= 0) return i
+        }
+        return rowMoveFrom
     }
 
     /** 只更新"跟手偏移 + 目标条目位置"，不动数据（松手才提交图层修改） */
@@ -6623,7 +7180,9 @@ class RecordView @JvmOverloads constructor(
         val r = panelRect()
         val listTop = panelListTop(r)
         val es = panelEntries()
-        val center = listTop - panelScroll + panelEntryTop(es, rowMoveFrom) + panelRowH() / 2f + rowMoveDy
+        val from = rowMoveIndex(es)
+        if (from !in es.indices) return
+        val center = listTop - panelScroll + panelEntryTop(es, from) + entryH(es[from]) / 2f + rowMoveDy
         var acc = 0f
         var hit = rowMoveTarget
         for (i in es.indices) {
@@ -6637,15 +7196,18 @@ class RecordView @JvmOverloads constructor(
     private fun endRowMove() {
         rowMoveActive = false
         rowMoveScrollRunnable.let { removeCallbacks(it) }
-        val from = rowMoveFrom
-        val to = rowMoveTarget
         // 先取条目（还在"只显示图层夹"的拖动状态里），再清拖动标记
         val es = panelEntries()
+        val from = rowMoveIndex(es)
+        val to = rowMoveTarget
         val src = es.getOrNull(from)
+        val dragLayer = rowMoveLayer       // 图层夹拖动：源图层值（行号在拖动中会失效）
+        val dragLineId = rowMoveLineId
         rowMoveDy = 0f
         rowMoveFrom = -1
         rowMoveTarget = -1
         rowMoveLayer = null
+        rowMoveLineId = -1
         invalidate()
         if (src != null && src.noiseIndex >= 0) {
             if (rowMoveMoved) {
@@ -6714,11 +7276,18 @@ class RecordView @JvmOverloads constructor(
             invalidate()
             return
         }
-        if (src != null && src.isFolder) {
-            val members = layerMembersOfTab(src.layer)
+        if (dragLayer != null) {
+            // 图层夹拖动：源图层用拖动开始时记下的 dragLayer（拖动期间列表只剩夹子，行号不可信）
+            val members = layerMembersOfTab(dragLayer)
             val framed = members.isNotEmpty() && members.all { it.id in selectedLines }
-            // 空图层（0 条线）：没有可框住的对象，长按什么都不做（以前 members.first() 会崩）
             if (members.isEmpty()) {
+                // 空图层：没有可框住的对象；拖动仍然允许调层顺序
+                if (rowMoveMoved && to in es.indices) {
+                    val dst = es[to]
+                    if (!dst.noiseFolder && dst.noiseIndex < 0 && dst.layer != dragLayer) {
+                        repositionLayer(dragLayer, dst.layer)
+                    }
+                }
                 rowMoveMoved = false
                 invalidate()
                 return
@@ -6738,45 +7307,77 @@ class RecordView @JvmOverloads constructor(
                 val dst = es[to]
                 // 混合页：拖到噪域夹/噪域行不改变线图层（线和噪域是两套图层体系）
                 val dstIsLineLayer = !dst.noiseFolder && dst.noiseIndex < 0
-                if (dstIsLineLayer) {
+                if (dstIsLineLayer && dst.layer != dragLayer) {
                     if (framed) {
                         // 拖动**被框住**的图层 = 合并到目标图层（不改变图层位置）
-                        if (dst.layer != src.layer) mergeLayer(src.layer, dst.layer)
+                        mergeLayer(dragLayer, dst.layer)
                     } else {
                         // 拖动**没有被框住**的图层 = 改变图层位置（其它图层躲避让位）
-                        repositionLayer(src.layer, dst.layer)
+                        repositionLayer(dragLayer, dst.layer)
                     }
                 }
             }
-        } else if (rowMoveMoved && src != null && !src.isFolder && to in es.indices) {
+        } else if (rowMoveMoved && dragLineId >= 0 && to in es.indices) {
             val dst = es[to]
-            // 拖动判定线框 = 修改图层（拖到图层夹封面、或拖进展开的夹子内部都算——目标位置所在图层）；
-            // 如果这条线在被框住的集合里，**框住的线一起改层**（用户点名）
+            // 拖动判定线框 = 改图层 **并插到目标位置**（1.10.15 的拖动排序语义）；
+            // 如果这条线在被框住的集合里，**框住的线一起搬**（用户点名）。
             // 混合页：拖到噪域夹/噪域行不生效（线和噪域是两套图层体系）
             if (dst.noiseFolder || dst.noiseIndex >= 0) {
                 rowMoveMoved = false
                 invalidate()
                 return
             }
-            val newLayer = dst.layer
-            val l = lines.getOrNull(src.lineIndex)
+            val l = lines.firstOrNull { it.id == dragLineId }
             if (l != null) {
                 val targets = if (l.id in selectedLines) lines.filter { it.id in selectedLines } else listOf(l)
-                if (targets.any { it.zOrder != newLayer }) {
-                    val own = tx == null
-                    if (own) beginTx()
-                    linesMutate { for (one in targets) one.zOrder = newLayer }
-                    if (own) endTx()
-                    DebugLog.add("line", "layer move ${targets.size} 条 -> $newLayer")
-                    onLinesChanged?.invoke()
-                }
+                moveLinesToRow(targets, dst, movingDown = to > from)
             }
-        } else if (!rowMoveMoved && src != null && !src.isFolder) {
+        } else if (!rowMoveMoved && dragLineId >= 0) {
             // 长按但没拖动 = **框住 / 取消框住** + 聚焦进编辑（不再弹删除确认框；删除走右滑 80%）
-            val id = lines.getOrNull(src.lineIndex)?.id
-            if (id != null) toggleFrameAndFocus(id)
+            toggleFrameAndFocus(dragLineId)
         }
         rowMoveMoved = false
+        invalidate()
+    }
+
+    /**
+     * 竖拖判定线的落点（1.10.15 的"项目拖动位置"）：既改图层，也把它插到目标行的位置。
+     * - 目标是图层夹（收起）：插到该层最上面；
+     * - 目标是某条线：按拖动方向插到它前面/后面；
+     * 多选（红框）时整组一起搬，保持组内原来的相对顺序。
+     */
+    private fun moveLinesToRow(targets: List<Line>, dst: PanelEntry, movingDown: Boolean) {
+        if (targets.isEmpty()) return
+        val ids = targets.map { it.id }.toHashSet()
+        val anchorId = if (!dst.isFolder) lines.getOrNull(dst.lineIndex)?.id else null
+        val own = tx == null
+        if (own) beginTx()
+        linesMutate {
+            for (l in targets) l.zOrder = dst.layer
+            val rest = lines.filter { it.id !in ids }
+            val at: Int = when {
+                dst.isFolder -> {
+                    val first = rest.indexOfFirst { it.zOrder == dst.layer }
+                    if (first >= 0) first else rest.size
+                }
+                anchorId != null && anchorId !in ids -> {
+                    val ai = rest.indexOfFirst { it.id == anchorId }
+                    when {
+                        ai < 0 -> rest.size
+                        movingDown -> ai + 1
+                        else -> ai
+                    }
+                }
+                else -> rest.size
+            }
+            lines.clear()
+            lines.addAll(rest)
+            lines.addAll(at.coerceIn(0, lines.size), targets)
+        }
+        if (own) endTx()
+        panelCacheKey = 0L
+        DebugLog.add("line", "row move ${targets.size} 条 -> layer ${dst.layer} (down=$movingDown)")
+        onLinesChanged?.invoke()
         invalidate()
     }
 
@@ -6891,7 +7492,7 @@ class RecordView @JvmOverloads constructor(
                 val fx = it.next()
                 if (fx.idx !in notes.indices || now > fx.untilMs) { it.remove(); continue }
                 val n = notes[fx.idx]
-                if (lineOf(n).id != id) continue
+                if (n.lineId != id) continue
                 val a = Math.toRadians(-rot.toDouble())
                 val xl = (n.posX + 1f) / 2f * width - width / 2f
                 val px = lcX + (xl * Math.cos(a)).toFloat()
@@ -6902,10 +7503,15 @@ class RecordView @JvmOverloads constructor(
                 val col = idx % hitFxCols
                 val row = idx / hitFxCols
                 texPaint.alpha = 215
+                // ★ 和头部那一下同色：Phira `note.rs` 的 Hold 粒子用的是
+                //   `JudgeStatus::Hold(perfect, ..)` 里记的 perfect，所以整段长条一个颜色，
+                //   不会"头一下黄、按住变白"（用户点名）。
+                texPaint.colorFilter = if (fx.tier == 0) fxPerfectFilter else fxGoodFilter
                 fxSrc.set(col * fw, row * fh, (col + 1) * fw, (row + 1) * fh)
                 fxDst.set(px - size / 2, py - size / 2, px + size / 2, py + size / 2)
                 canvas.drawBitmap(holdFxFxBmp, fxSrc, fxDst, texPaint)
             }
+            texPaint.colorFilter = null
         }
     }
 
@@ -7121,7 +7727,8 @@ class RecordView @JvmOverloads constructor(
         livePaint.color = color
         val halfW = cellW * 0.72f * scale
         val halfH = dp(18f) * scale
-        canvas.drawRoundRect(-halfW, -halfH, halfW, halfH, dp(9f) * scale, dp(9f) * scale, livePaint)
+        // 直角框（用户点名：音符的红/橙/蓝/绿/混合框都不要圆角）
+        canvas.drawRect(-halfW, -halfH, halfW, halfH, livePaint)
         livePaint.style = Paint.Style.FILL
         canvas.restore()
     }
@@ -7392,7 +7999,24 @@ class RecordView @JvmOverloads constructor(
     }
 
     // ---------------------------------------------------------------- 手势
+    /**
+     * 输入锁：暂停菜单点「继续」后的 3 秒倒计时期间置 true。
+     * 这 3 秒里既不能打音符、也不能拖动谱面/搓时间轴（用户点名）。
+     * 音乐还没开始播，判定本来也不会发生；这把锁再挡一层触摸，双保险。
+     */
+    var inputLocked: Boolean = false
+        set(value) { field = value }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (inputLocked) {
+            // 吃掉事件：不进入任何手势状态机（连"按下预览音符"都不要出现）
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                java.util.Arrays.fill(fingerDown, false)
+                java.util.Arrays.fill(fingerDead, false)
+                holdNotes.clear()
+            }
+            return true
+        }
         // 一次按下 → 抬起 = 一个撤销步（多指同时操作也算一步，撤销时整组一起回退）
         val isDown = event.actionMasked == MotionEvent.ACTION_DOWN
         val isUp = event.actionMasked == MotionEvent.ACTION_UP ||
@@ -7527,9 +8151,7 @@ class RecordView @JvmOverloads constructor(
                     f.above = yl < 0f
                 }
 
-                spawnHitFx(x, y)
-                ensureSounds()
-                playHitSound(pass)
+                placeNoteFeedback(x, y, pass)
 
                 if (pass == 4) {
                     // 第四次：长条。按下不放任何东西，抬手生成（finishGesture）
@@ -7593,7 +8215,7 @@ class RecordView @JvmOverloads constructor(
                 f.chainCell = -1
                 f.lineId = activeLineId
                 f.above = true
-                spawnHitFx(x, y); ensureSounds(); playHitSound(pass)
+                placeNoteFeedback(x, y, pass)
                 invalidate()
                 return true
             }
@@ -7792,7 +8414,8 @@ class RecordView @JvmOverloads constructor(
                     f.lineId = activeLineId
                 }
                 if (hit >= 0) {
-                    spawnHitFx(x, y); ensureSounds(); playHitSound(pass)
+                    // 点已有音符（选中红框 / 点红框删除）**不出打击特效、不响打击音效**（用户点名）：
+                    // 这两下是编辑操作，不是判定，声音会和"放置音符"的反馈混在一起。
                     if (hit in selectedSet) {
                         f.willDelete = true          // 点红框内 → 松手未拖动则删除全部
                         f.mode = 2
@@ -7820,7 +8443,7 @@ class RecordView @JvmOverloads constructor(
                         f.mode = 1
                         f.blockedKind = target.kind   // UP 单击时才提示
                     } else {
-                        ensureSounds(); playHitSound(pass)
+                        placeNoteFeedback(x, y, pass)
                         f.mode = 1
                     }
                 }
@@ -7840,6 +8463,7 @@ class RecordView @JvmOverloads constructor(
                             boxX1 = x; boxY1 = y; selectingBox = true
                             // 框选碰到上/下遮罩也自动滚时间轴（和拖音符一致）
                             updateEdgeScroll(y)
+                            maybeBoxSweep()      // 增量框住：边框边滚时经过的音符实时进红框
                         }
                         2 -> {
                             if (Math.abs(y - f.downY) > dp(6f) || Math.abs(x - f.downX) > dp(6f)) f.moved = true
@@ -7998,13 +8622,13 @@ class RecordView @JvmOverloads constructor(
                             // 用判定线局部 x 吸附，判定线旋转后落点仍然贴手
                             val pos = posXFromLocal(xlAt(f.downX, f.downY) / xfAt(start))
                             addNote(RecordedNote(2, start, end, pos, 4, ln.id, aboveForPlace))
-                            spawnHitFx(f.curX, f.curY)
+                            if (playingProvider?.invoke() == true) spawnHitFx(f.curX, f.curY)
                         } else {
                             val t = yTime(f.curY)
                             val pos = posXFromLocal(xlAt(f.curX, f.curY) / xfAt(t))
                             if (pass == 4) addNote(RecordedNote(2, t, t + (cellMs() * 2).toLong(), pos, 4, ln.id, aboveForPlace))
                             else addNote(RecordedNote(passType(pass), t, t, pos, pass, ln.id, aboveForPlace))
-                            spawnHitFx(f.curX, f.curY)
+                            if (playingProvider?.invoke() == true) spawnHitFx(f.curX, f.curY)
                         }
                         }
                     }
@@ -8045,8 +8669,31 @@ class RecordView @JvmOverloads constructor(
         }
     }
 
-    /** 框选结束：框内音符全部进选中集 */
+    /** 增量框选节流：自动移动滚动很快，全量判定按 40ms 节流足够顺滑，也不拖累帧率 */
+    private var lastBoxSweepAt = 0L
+
+    /** 框选进行中（长按膨胀后）每帧调一下；内部按 40ms 节流做一次增量判定 */
+    private fun maybeBoxSweep() {
+        if (!selectingBox) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastBoxSweepAt < 40L) return
+        lastBoxSweepAt = now
+        boxSweep(clear = false)
+    }
+
+    /** 框选结束：过程中已增量收集"经过的"音符，这里只补最后一屏判定并复位标志 */
     private fun finishBoxSelect() {
+        boxSweep(clear = false)
+        boxActive = false
+        selectingBox = false
+    }
+
+    /**
+     * 框选判定（框内音符进选中集）。[clear]=true 先清空（老语义：松手只按最终矩形重算）；
+     * false = 增量累积——配合自动移动贴边滚动，**滚动经过的每一屏**里落在框内的音符都会被框住，
+     * 而不是只框最后一屏。判定本身 O(全部音符)，已被 40ms 节流兜住。
+     */
+    private fun boxSweep(clear: Boolean) {
         val now = playMs()
         val x0 = minOf(boxX0, boxX1); val x1 = maxOf(boxX0, boxX1)
         val y0 = minOf(boxY0, boxY1); val y1 = maxOf(boxY0, boxY1)
@@ -8054,7 +8701,7 @@ class RecordView @JvmOverloads constructor(
         val frameBox = compatMode >= 2
         val fw = (width.toFloat().coerceAtLeast(1f) / vLines.coerceAtLeast(1)) * 0.72f
         val fh = dp(18f)
-        selectedSet.clear()
+        if (clear) selectedSet.clear()
         for (l in lines) {
             // 线高亮关着时，别的判定线是"看得到点不到"，框选也一样只框当前那条线
             if (!highlightAllLines && l.id != activeLineId) continue
@@ -8088,8 +8735,6 @@ class RecordView @JvmOverloads constructor(
                 if (maxX >= x0 && minX <= x1 && maxY >= y0 && minY <= y1) selectedSet.add(i)
             }
         }
-        boxActive = false
-        selectingBox = false
     }
 
     /** 删除所有被框住（红框）的音符 */
@@ -8409,6 +9054,21 @@ class RecordView @JvmOverloads constructor(
         return playSortedIdx
     }
 
+    /**
+     * 在按 [RecordedNote.startMs] 升序的 [order] 上二分出第一个 `startMs >= t` 的位置。
+     * 打歌判定和「每秒长条调试日志」都要按时间窗取一段，以前每处各写一份二分，
+     * 收在这里一份（[tickAutoPlay] / onDraw 共用）。
+     */
+    private fun lowerBoundStartMs(order: IntArray, t: Long): Int {
+        var lo = 0
+        var hi = order.size
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (notes[order[mid]].startMs < t) lo = mid + 1 else hi = mid
+        }
+        return lo
+    }
+
     /** Autoplay：音符到判定线自动 PERFECT + 特效 + 音效。
      *  只在「落线后 AUTO_HIT_WINDOW_MS 内」判定；太旧音符静默跳过；回拖进度条自动重置判定。
      *  假音符（fake）只显示，不判定、不出声。 */
@@ -8442,13 +9102,7 @@ class RecordView @JvmOverloads constructor(
         if (manualPlay) {
             // 「你写我打」打方：真音符**不自动判定**，等玩家手指（见 manualTick / manualOnDown）；
             // 这里只负责让假音符按 Phira 语义飞到点就消失，否则会一直挂在屏幕上。
-            val fromMs = now - AUTO_HIT_WINDOW_MS
-            var mlo = 0
-            var mhi = order.size
-            while (mlo < mhi) {
-                val mid = (mlo + mhi) ushr 1
-                if (notes[order[mid]].startMs < fromMs) mlo = mid + 1 else mhi = mid
-            }
+            val mlo = lowerBoundStartMs(order, now - AUTO_HIT_WINDOW_MS)
             for (k in mlo until order.size) {
                 val i = order[k]
                 val n = notes[i]
@@ -8459,12 +9113,23 @@ class RecordView @JvmOverloads constructor(
             manualTick(now)
             return
         }
-        val fromMs = now - AUTO_HIT_WINDOW_MS
-        var lo = 0
-        var hi = order.size
-        while (lo < hi) {
-            val mid = (lo + hi) ushr 1
-            if (notes[order[mid]].startMs < fromMs) lo = mid + 1 else hi = mid
+        val lo = lowerBoundStartMs(order, now - AUTO_HIT_WINDOW_MS)
+        // ★ 打击音效**预响**（修"音效慢半拍"，见 [hitSoundLeadMs]）：
+        //   判定只能在帧边界发生，而且 SoundPool 出声还要过一遍输出缓冲，
+        //   所以音效按 `startMs - lead` 提前打出去；判定/特效/音符消失仍在到线那一刻。
+        //   只在这里（Autoplay）做：自己打是手指按下的一瞬间，本来就同步，提前响反而怪。
+        val lead = hitSoundLeadMs
+        if (soundEnabled && lead > 0L) {
+            for (k in lo until order.size) {
+                val i = order[k]
+                val n = notes[i]
+                if (n.startMs - lead > now) break      // 升序：后面的都还早
+                // judgedAt：从中间开播/回拖时，之前那些音符已被 seedPassedNotes 标掉，
+                // 别在这里补响一串"早已过去"的音效
+                if (n.fake || judgedAt(i) || sndDoneAt(i)) continue
+                markSndDone(i)
+                playHitSound(n.type)
+            }
         }
         for (k in lo until order.size) {
             val i = order[k]
@@ -8809,13 +9474,13 @@ class RecordView @JvmOverloads constructor(
         hitCount++
         combo++
         if (combo > maxCombo) maxCombo = combo
-        // ★ 蓝键/长条按准度分「蓝打击 / 黄打击」（Phira LIMIT_PERFECT = 80ms）：
-        //   |偏差| ≤ 80ms ⇒ PERFECT（蓝）；更早/更晚但还在窗口内 ⇒ GOOD（黄）。
-        //   黄键(4)/红键(3) 没有准度（Phira 里它们恒为 Perfect），但按用户要求
-        //   **永远出黄打击、不会蓝打击**。
+        // ★ 蓝键/长条按准度分「PERFECT / GOOD」两档（Phira `judge.rs` LIMIT_PERFECT = 80ms）：
+        //   |偏差| ≤ 80ms ⇒ PERFECT（淡黄打击），更早/更晚但仍在窗口内 ⇒ GOOD（淡蓝打击）。
+        //   黄键(4)/红键(3) **没有准度**：Phira 里它们走 PreJudge → 一律 `Judgement::Perfect`，
+        //   所以特效恒为 PERFECT 那一档（淡黄），永远不出蓝 —— 用户点名的"黄键红键不出蓝"就是这个。
         val off = Math.abs(now - n.startMs)
         val accuracyNote = n.type == 1 || n.type == 2
-        val goodFx = !accuracyNote || off > PERFECT_MS
+        val goodFx = accuracyNote && off > PERFECT_MS
         // 成绩里只有「蓝键/长条的偏差」算 GOOD；黄键/红键照 Phira 记 PERFECT
         if (accuracyNote && off > PERFECT_MS) goodCount++
         // 特效打在判定线上（音符沿线位置、线本身），避免音符过线后特效偏下
@@ -8828,9 +9493,11 @@ class RecordView @JvmOverloads constructor(
         val sinA = Math.sin(rotA).toFloat()
         val xl = ((n.posX + 1f) / 2f * width - width / 2f) * noteXFactor(l, n, now)
         spawnHitFx(lcX + xl * cosA, lcY + xl * sinA, if (goodFx) 1 else 0)
-        playHitSound(n.type)
-        // 长条：登记持续特效（直到尾部离开判定线）；音效只此一次
-        if (n.type == 2) holdFxList.add(HoldFx(i, n.endMs))
+        // 音效：Autoplay 的预响已经打过就不要再响一遍（见 hitSoundLeadMs）
+        if (!sndDoneAt(i)) { markSndDone(i); playHitSound(n.type) }
+        // 长条：登记持续特效（直到尾部离开判定线，或松手）；音效只此一次。
+        // 档位跟着头部这一下走 ⇒ 整段长条同色（用户点名）
+        if (n.type == 2) holdFxList.add(HoldFx(i, n.endMs, if (goodFx) 1 else 0))
     }
 
     /** 左上角暂停按钮上一次按下的时刻（双击防误触用） */
@@ -9023,12 +9690,7 @@ class RecordView @JvmOverloads constructor(
     fun saveDraft(): String =
         DraftCodec.encode(lines, notes, emptyList(), noiseAreas, declaredLayers, declaredNoiseLayers, videos)
 
-    /** 联机同步用：草稿 + 剪贴板一起序列化（本地草稿仍然不存剪贴板） */
-    fun draftWithClip(): String =
-        DraftCodec.encode(lines, notes, clipEntries, noiseAreas, declaredLayers, declaredNoiseLayers, videos)
-
-    /**
-     * 联机同步用：在**主线程**抓一份引用快照（只浅拷贝 List，不拼字符串），
+    /** 联机同步用：在**主线程**抓一份引用快照（只浅拷贝 List，不拼字符串），
      * 返回可以丢到后台线程调用的 encoder。
      * DraftCodec.encode 遍历的是快照，不会和主线程同时 addNote 触发并发修改；
      * 主线程省下的是真正贵的字符串生成（44 万音符每轮几十 ms）。

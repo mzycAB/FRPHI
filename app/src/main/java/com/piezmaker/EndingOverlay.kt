@@ -26,7 +26,7 @@ import android.widget.TextView
  *  · **右侧**（屏幕 5/6 处）放选曲页那块灰色长方形（9:16 竖着，图跟着变）。
  *
  * Phira 原版还有成绩上传、RKS、early/late 明细、误差标准差；本地没有账号，
- * 判定只有 PERFECT(蓝打击)/GOOD(黄打击)/MISS 三档，所以 BAD 恒 0。
+ * 判定只有 PERFECT / GOOD / MISS 三档（PERFECT 打击特效淡黄、GOOD 淡蓝），所以 BAD 恒 0。
  */
 object EndingOverlay {
 
@@ -35,7 +35,7 @@ object EndingOverlay {
         val level: String,
         val score: Int,
         val hit: Int,
-        /** 黄打击（GOOD）个数；PERFECT = hit - good */
+        /** GOOD 个数；PERFECT = hit - good */
         val good: Int,
         val total: Int,
         val maxCombo: Int,

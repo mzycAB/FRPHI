@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 「其他」菜单按钮：和右侧抽屉判定线项目同款 —— 半透明灰底、白字、直角（无圆角、无描边）
+     灰底 0x22FFFFFF 即判定线行未选中时的底色 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#33FFFFFF" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#22FFFFFF" />
+        </shape>
+    </item>
+</selector>

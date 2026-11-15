@@ -46,7 +46,11 @@ class ImportedLine(
     val textEvents: List<TextEvent> = emptyList(),
     /** 静态缩放（RPE extended.scaleX/scaleYEvents 的第一个值） */
     val scaleX: Float = 1f,
-    val scaleY: Float = 1f
+    val scaleY: Float = 1f,
+    /** 颜色事件（RPE extended.colorEvents）：判定线自身颜色动画，整段保留 */
+    val colorEvents: List<ColorEvent> = emptyList(),
+    /** RPE isCover：true = 判定线画在音符上面 */
+    val cover: Boolean = false
 )
 
 /**
@@ -390,7 +394,9 @@ object PezImporter {
                     textEvents = line.textEvents,
                     scaleX = pose.scaleX,
                     scaleY = pose.scaleY,
-                    zOrder = line.zOrder
+                    zOrder = line.zOrder,
+                    colorEvents = line.colorEvents,
+                    cover = line.cover
                 )
             )
         }
@@ -626,8 +632,8 @@ object PezImporter {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val st = o.optDouble("startTime", 0.0).takeIf { it.isFinite() } ?: 0.0
-            var et = o.optDouble("endTime", st).takeIf { it.isFinite() } ?: st
-            if (et < st) et = st
+            val et = o.optDouble("endTime", st).takeIf { it.isFinite() } ?: st
+            if (et < st) continue                 // Phira validate_events：start>end 直接丢
             val t0 = (if (st < 0) 0.0 else st) * unit
             if (t0 >= chartEndSec) continue   // ★ 谱尾外整段丢（全是「保持到底」的 1e9 尾巴）
             // value 缺失 / 非有限 → 按 1（不缩不放），绝不按 0（0 会让整条线塌在判定线上）
@@ -644,6 +650,13 @@ object PezImporter {
             out.add(PgrSeg(t0, Math.min(et * unit, chartEndSec), v, v))
         }
         out.sortBy { it.t0 }
+        // ★ Phira `parse_speed_events`：`if pgr[0].start_time != 0. { pgr[0].start_time = 0. }`
+        //   第一段流速从 0 时刻就生效。不这么做的话，谱面开头（第一个速度事件之前）
+        //   会用默认流速 1，和 Phira 的下落速度对不上——"有的官谱一开头音符速度就是错的"。
+        if (out.isNotEmpty() && out[0].t0 > 1e-9) {
+            val f = out[0]
+            out[0] = PgrSeg(0.0, f.t1, f.v0, f.v1)
+        }
         return out
     }
 
@@ -730,9 +743,11 @@ object PezImporter {
                     val o = arr.optJSONObject(i) ?: continue
                     val st = o.optDouble("startTime", 0.0).takeIf { it.isFinite() } ?: 0.0
                     var et = o.optDouble("endTime", st).takeIf { it.isFinite() } ?: st
+                    // Phira `validate_events!`：start > end 的事件直接丢弃（不是压成零长度），
+                    // 零长度段会在点集里制造两个同刻同值的点，边界判定容易误判成跳变。
+                    if (et < st) continue
                     val t0 = (if (st < 0) 0.0 else st) * unit
                     if (t0 >= chartEndSec) continue   // ★ 谱尾外整段丢（全是「保持到底」的 1e9 尾巴）
-                    if (et < st) et = st
                     val v0 = o.optDouble("start", 0.0).takeIf { it.isFinite() } ?: 0.0
                     val v1 = o.optDouble("end", v0).takeIf { it.isFinite() } ?: v0
                     out.add(PgrSeg(t0, Math.min(et * unit, chartEndSec), v0, v1))
@@ -766,8 +781,8 @@ object PezImporter {
                 for (i in 0 until arr.length()) {
                     val o = arr.optJSONObject(i) ?: continue
                     val st = o.optDouble("startTime", 0.0).takeIf { it.isFinite() } ?: 0.0
-                    var et = o.optDouble("endTime", st).takeIf { it.isFinite() } ?: st
-                    if (et < st) et = st
+                    val et = o.optDouble("endTime", st).takeIf { it.isFinite() } ?: st
+                    if (et < st) continue             // Phira validate_events：start>end 直接丢
                     val t0 = (if (st < 0) 0.0 else st) * unit
                     if (t0 >= chartEndSec) continue   // ★ 谱尾外整段丢（全是「保持到底」的 1e9 尾巴）
                     val t1 = Math.min(et * unit, chartEndSec)
@@ -997,6 +1012,10 @@ object PezImporter {
         val scaleYEv: Anim = Anim(emptyList()),
         /** RPE zOrder（绘制图层序），原样保留供导出回写 */
         val zOrder: Int = 0,
+        /** RPE extended.colorEvents（判定线颜色动画，整段保留） */
+        val colorEvents: List<ColorEvent> = emptyList(),
+        /** RPE isCover：true = 判定线画在音符上面 */
+        val cover: Boolean = false,
         /**
          * 官谱（Phigros Official JSON）专用：单轨采样模型。
          *
@@ -1133,6 +1152,33 @@ object PezImporter {
                 )
             }
         }
+        // 颜色事件（extended.colorEvents）：Phira 把它解析成判定线的 color 动画。
+        // 以前整段忽略 ⇒ 带颜色的线导进导出变纯白。RGB 是 [r,g,b] 数组（也兼容 {r,g,b}）。
+        val colorEvents = ArrayList<ColorEvent>()
+        extObj?.optJSONArray("colorEvents")?.let { carr ->
+            for (i in 0 until carr.length()) {
+                val o = carr.optJSONObject(i) ?: continue
+                fun rgb(v: String): Int {
+                    val a = o.optJSONArray(v) ?: return -1
+                    if (a.length() < 3) return -1
+                    val r = a.optDouble(0, -1.0).toInt().coerceIn(0, 255)
+                    val g = a.optDouble(1, -1.0).toInt().coerceIn(0, 255)
+                    val b = a.optDouble(2, -1.0).toInt().coerceIn(0, 255)
+                    return (r shl 16) or (g shl 8) or b
+                }
+                val c0 = rgb("start").takeIf { it >= 0 } ?: continue
+                val c1 = rgb("end").takeIf { it >= 0 } ?: c0
+                val st = o.optJSONArray("startTime") ?: continue
+                val et = o.optJSONArray("endTime") ?: st
+                colorEvents.add(
+                    ColorEvent(
+                        Math.round((bpm.seconds(tripleBeats(st)) + offsetSec) * 1000.0),
+                        Math.round((bpm.seconds(tripleBeats(et)) + offsetSec) * 1000.0),
+                        c0, c1, o.optInt("easingType", 1)
+                    )
+                )
+            }
+        }
         // scaleXEvents / scaleYEvents 是**事件数组**（每个事件 start→end 缓动），不是单一值。
         // 以前只取了第一个事件的 start，导致"改缩放全部应用"、关键帧缩放进不来。
         val scaleXEv = toAnim(bpm, extObj?.optJSONArray("scaleXEvents"), 1.0)
@@ -1186,7 +1232,9 @@ object PezImporter {
             LayerAnim(alphaEv), notes,
             father, rotWithFather, ctrlY, ctrlPos, ctrlSize, ctrlAlpha, incline,
             lineText, textEvents, scaleXEv, scaleYEv,
-            line.optInt("zOrder", 0)
+            line.optInt("zOrder", 0),
+            colorEvents,
+            line.optInt("isCover", 1) == 1
         )
     }
 

@@ -26,9 +26,14 @@ data class AiEndpoint(
         put("persona", persona)
     }
 
-    /** 能不能直接拿来请求：地址、Key、模型都得有 */
+    /**
+     * 能不能直接拿来请求：地址、Key、模型都得有。
+     * ★ 地址走 [AiClient.normalizeUrl]：只填 `api.deepseek.com` 或 `…/v1` 也算可用
+     *   （以前这里只认 `http` 开头，只写域名的用户会一直看到「接口未配置完整」）。
+     */
     val usable: Boolean
-        get() = apiUrl.startsWith("http") && apiKey.isNotBlank() && model.isNotBlank()
+        get() = AiClient.normalizeUrl(apiUrl).startsWith("http") &&
+            apiKey.isNotBlank() && model.isNotBlank()
 
     companion object {
         fun fromJson(o: JSONObject) = AiEndpoint(

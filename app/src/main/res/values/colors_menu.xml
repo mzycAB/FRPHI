@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 「其他」下拉菜单：全宽直角面板，配色与编辑界面深色系协调 -->
+    <color name="menu_panel_bg">#99000000</color>
+    <color name="menu_panel_dim">#66000000</color>
+    <color name="menu_divider">#FF000000</color>
+    <color name="menu_header_bg">#00000000</color>
+    <color name="menu_header_text">#FFFFFFFF</color>
+    <color name="menu_cell_bg">#00000000</color>
+    <color name="menu_label_text">#FFA8B4C4</color>
+    <color name="menu_hint_text">#88FFFFFF</color>
+    <color name="menu_btn_bg">#FF233247</color>
+    <color name="menu_btn_bg_pressed">#FF2E4360</color>
+    <color name="menu_input_bg">#FF101724</color>
+</resources>

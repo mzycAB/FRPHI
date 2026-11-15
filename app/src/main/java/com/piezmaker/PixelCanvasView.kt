@@ -204,9 +204,6 @@ class PixelCanvasView @JvmOverloads constructor(
         invalidate()
     }
 
-    /** 有没有框住东西 */
-    val hasSelection: Boolean get() = selRect?.let { !it.isEmpty } == true
-
     fun clearSelection() {
         selRect = null
         selDragging = false

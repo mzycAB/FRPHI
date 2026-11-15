@@ -13,6 +13,8 @@ captures/
 # 打包产物（万一被拷到项目根目录，别提交）
 *.apk
 *.aab
+*.apks
+*.idsig
 *.hprof
 
 # 签名 / 密钥 / 凭据：私钥与口令一律不进仓库（构建时从本机 keystore.properties 读）
@@ -52,6 +54,7 @@ Thumbs.db
 
 # 日志
 *.log
+build_log*.txt
 
 # 临时目录 / 压缩包（调试参考、导出中间产物）
 .tmp/
@@ -73,3 +76,6 @@ app/release/
 *.mc
 Chart_*.json
 chart.json
+
+# 本地构建日志
+build_log.txt

@@ -58,16 +58,6 @@ class VerticalSlideLayout @JvmOverloads constructor(
         setProgress(p)
     }
 
-    /** 松手：按位置 + 速度吸附到 0 / 1，带减速插值（动画时长随剩余距离变化） */
-    fun settle(velocityPxPerSec: Float = 0f) {
-        val target = when {
-            velocityPxPerSec > 900f -> 1f
-            velocityPxPerSec < -900f -> 0f
-            else -> if (progress >= 0.5f) 1f else 0f
-        }
-        animateTo(target)
-    }
-
     fun animateTo(target: Float) {
         val from = progress
         val to = target.coerceIn(0f, 1f)

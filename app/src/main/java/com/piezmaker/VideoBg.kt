@@ -82,9 +82,11 @@ class VideoFrameLoader(private val path: String) {
     private var requestedMs = -1L
     private var closed = false
 
-    private val thread = Thread({ loop() }, "frphi-video").apply {
-        isDaemon = true
-        start()
+    private val thread = Thread({ loop() }, "frphi-video")
+
+    init {
+        thread.isDaemon = true
+        thread.start()
     }
 
     /** 请求某一时刻的画面（毫秒，相对视频开头）；连续请求只保留最后一个 */
